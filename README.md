@@ -209,3 +209,44 @@ Logs: Real-time request logs can be viewed by navigating to Workers & Pages -> p
 Analytics: View request volume, latency, and CPU usage under the Analytics tab for the worker.
 
 Manual Credit Adjustments: User credit balances can be viewed and manually adjusted by navigating to Storage & Databases -> Workers KV -> PLUCT_KV. This is your primary customer support tool.
+
+### SQLite Integration
+
+The Pluct Business Engine now uses SQLite for persistent storage. The database schema includes tables for users, transactions, and API keys.
+
+#### Database Schema
+
+- **users**: Stores user information and credit balances.
+- **transactions**: Logs all credit-related transactions.
+- **api_keys**: Stores generated API keys with descriptions.
+
+#### Setup Instructions
+
+1. Install SQLite:
+   ```bash
+   npm install sqlite3 @types/sqlite3
+   ```
+
+2. Initialize the database:
+   ```bash
+   npx ts-node src/initialize_db.ts
+   ```
+
+### Web Landing Page
+
+An admin panel is available for managing the business engine. It includes:
+
+- **Login Page**: Super admin login with default credentials (`admin`/`admin123`).
+- **Dashboard**: View users, generate API keys, and monitor transactions.
+
+#### Running the Admin Panel
+
+1. Start the development server:
+   ```bash
+   npx wrangler dev
+   ```
+
+2. Open the admin panel in your browser:
+   ```
+   http://localhost:8787
+   ```
