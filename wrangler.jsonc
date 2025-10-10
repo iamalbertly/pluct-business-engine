@@ -1,8 +1,7 @@
 {
-  "$schema": "https://raw.githubusercontent.com/cloudflare/workerd/main/src/workerd/server/workerd.json-schema.json",
   "name": "pluct-business-engine",
   "main": "src/index.ts",
-  "compatibility_date": "2024-09-23",
+  "compatibility_date": "2024-01-17",
   "account_id": "f3d26b442c718cb847230aec6f8f5256",
   "kv_namespaces": [
     {
@@ -11,9 +10,15 @@
       "preview_id": "d874be62e86b464590526e6c3ddd094a"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pluct-db",
+      "database_id": "d28d34a0-1e7a-402b-bdc8-f00bf961cad4"
+    }
+  ],
   "vars": {
     "JWT_SECRET": "local-dev-jwt-secret-never-use-in-prod-12345",
     "WEBHOOK_SECRET": "local-dev-webhook-secret-never-use-in-prod-67890"
-  },
-  "compatibility_flags": ["nodejs_compat"]
+  }
 }
