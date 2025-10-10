@@ -111,8 +111,30 @@ admin.get('/transactions', async (c) => {
 
 admin.post('/credits/add', async (c) => {
     const { userId, amount, reason } = await c.req.json<{ userId: string; amount: number; reason: string }>();
-    // ... same logic as /add-credits but with reason and admin transaction type
-    return c.json({ success: true, message: `Manually added ${amount} credits to ${userId}` });
+    
+    if (!userId || !amount || amount <= 0) {
+        return c.json({ error: 'User ID and positive amount are required' }, 400);
+    }
+
+    const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const currentCredits = currentCreditsStr ? parseInt(currentCreditsStr, 10) : 0;
+    const newCredits = currentCredits + amount;
+    
+    const transactionId = crypto.randomUUID();
+    const stmt = c.env.DB.prepare(
+        'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(transactionId, userId, 'admin_add', amount, new Date().toISOString(), reason || 'Manual credit addition by admin');
+
+    await Promise.all([
+        c.env.PLUCT_KV.put(`user:${userId}`, newCredits.toString()),
+        stmt.run()
+    ]);
+
+    return c.json({ 
+        success: true, 
+        newBalance: newCredits,
+        message: `Manually added ${amount} credits to ${userId}` 
+    });
 });
 
 // Mount the secure admin API under the /admin path

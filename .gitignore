@@ -1,5 +1,6 @@
 # Logs
 
+.dev.vars
 logs
 _.log
 npm-debug.log_
