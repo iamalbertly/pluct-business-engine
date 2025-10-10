@@ -250,3 +250,124 @@ An admin panel is available for managing the business engine. It includes:
    ```
    http://localhost:8787
    ```
+
+## Complete API Reference
+
+### Core Business Endpoints
+
+#### 1. Vend Token
+Issues a single-use JWT for performing a premium action.
+
+**Endpoint:** `POST /vend-token`
+
+**Request Body:**
+```json
+{
+  "userId": "client-generated-unique-user-id-123"
+}
+```
+
+**Success Response (200 OK):**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOi..."
+}
+```
+
+#### 2. Add Credits (Webhook)
+Adds credits to a user's account via payment provider.
+
+**Endpoint:** `POST /add-credits`
+
+**Required Header:** `x-webhook-secret: YOUR_PRODUCTION_WEBHOOK_SECRET`
+
+**Request Body:**
+```json
+{
+  "userId": "client-generated-unique-user-id-123",
+  "amount": 10
+}
+```
+
+### Admin Management Endpoints
+
+#### 3. Get All Users
+**Endpoint:** `GET /admin/users`
+
+Retrieves comprehensive user information including credit balances, transaction history, and usage statistics.
+
+#### 4. Get User Details
+**Endpoint:** `GET /admin/users/:userId`
+
+Retrieves detailed information about a specific user including transaction history.
+
+#### 5. Add Credits (Admin)
+**Endpoint:** `POST /admin/add-credits`
+
+Manually add credits to a user's account with optional reason tracking.
+
+**Request Body:**
+```json
+{
+  "userId": "user-123",
+  "amount": 10,
+  "reason": "Customer service credit"
+}
+```
+
+#### 6. Deduct Credits (Admin)
+**Endpoint:** `POST /admin/deduct-credits`
+
+Manually deduct credits from a user's account with optional reason tracking.
+
+**Request Body:**
+```json
+{
+  "userId": "user-123",
+  "amount": 5,
+  "reason": "Refund processing"
+}
+```
+
+#### 7. Get All Transactions
+**Endpoint:** `GET /admin/transactions`
+
+Retrieves all system transactions with detailed information.
+
+#### 8. Generate API Key
+**Endpoint:** `POST /admin/generate-key`
+
+Creates a new API key for system access.
+
+**Request Body:**
+```json
+{
+  "description": "Mobile app integration"
+}
+```
+
+#### 9. Get System Statistics
+**Endpoint:** `GET /admin/stats`
+
+Retrieves comprehensive system statistics and metrics including:
+- Total users
+- Total credits in system
+- Credits added/spent
+- Transaction counts
+- API key counts
+
+## Enhanced Admin Dashboard Features
+
+The web interface now includes:
+
+- **Real-time Statistics**: Live system metrics and user counts
+- **Comprehensive User Management**: View all users with detailed analytics
+- **Credit Management**: Add/deduct credits with reason tracking
+- **Transaction Monitoring**: Real-time transaction tracking and history
+- **API Key Management**: Generate and manage API keys
+- **User Analytics**: Detailed user activity and credit usage patterns
+- **Responsive Design**: Modern, mobile-friendly interface
+
+**Login Credentials:**
+- Username: `admin`
+- Password: `admin123`
