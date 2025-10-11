@@ -31,6 +31,24 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
 
+      - name: Set JWT_SECRET
+        run: echo "${{ secrets.JWT_SECRET }}" | npx wrangler secret put JWT_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Set WEBHOOK_SECRET
+        run: echo "${{ secrets.WEBHOOK_SECRET }}" | npx wrangler secret put WEBHOOK_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Set ADMIN_SECRET
+        run: echo "${{ secrets.ADMIN_SECRET }}" | npx wrangler secret put ADMIN_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
@@ -38,14 +56,6 @@ jobs:
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
           command: deploy
           wranglerVersion: '3'
-          secrets: |
-            JWT_SECRET
-            WEBHOOK_SECRET
-            ADMIN_SECRET
-        env:
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
 
       - name: Verify Deployment
         run: |
