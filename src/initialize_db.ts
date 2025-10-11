@@ -5,14 +5,14 @@ export async function initializeDatabase(env: { DB: D1Database }) {
   try {
     // Create the transactions table with the correct schema
     await env.DB.exec(`
-      CREATE TABLE IF NOT EXISTS transactions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        amount INTEGER NOT NULL,
-        timestamp TEXT NOT NULL,
-        reason TEXT
-      );
+CREATE TABLE IF NOT EXISTS transactions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  timestamp TEXT NOT NULL,
+  reason TEXT
+);
     `);
     
     console.log('Database initialized successfully');
