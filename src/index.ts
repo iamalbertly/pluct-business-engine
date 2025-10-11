@@ -19,7 +19,12 @@ const MAX_TRANSACTION_LIMIT = 100;
 
 // Input validation helper
 const validateUserId = (userId: string): boolean => {
-  return userId && typeof userId === 'string' && userId.trim().length > 0 && userId.length <= 100;
+  if (!userId || typeof userId !== 'string' || userId.trim().length === 0 || userId.length > 100) {
+    return false;
+  }
+  // Sanitize the input to prevent SQL injection
+  const sanitized = sanitizeInput(userId);
+  return sanitized === userId; // Only valid if no sanitization was needed
 };
 
 const validateAmount = (amount: number): boolean => {
@@ -40,6 +45,24 @@ const logError = (context: string, error: unknown, userId?: string) => {
     error: error instanceof Error ? error.message : String(error)
   };
   console.error(JSON.stringify(errorInfo));
+};
+
+// Centralized error messages
+const ERROR_MESSAGES = {
+  INVALID_USER_ID: 'Valid user ID is required',
+  INVALID_AMOUNT: `Valid amount between 1 and ${MAX_CREDITS_PER_TRANSACTION} is required`,
+  INVALID_TOKEN: 'Valid token is required',
+  INSUFFICIENT_CREDITS: 'Insufficient credits',
+  UNAUTHORIZED: 'Unauthorized',
+  USER_EXISTS: 'User already exists',
+  INTERNAL_ERROR: 'Internal server error'
+} as const;
+
+// Safe parseInt with error handling
+const safeParseInt = (value: string | null, defaultValue: number = 0): number => {
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -105,19 +128,19 @@ app.get('/user/:userId/balance', async (c) => {
   try {
     const userId = c.req.param('userId');
     
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-      return c.json({ error: 'Valid user ID is required' }, 400);
+    if (!validateUserId(userId)) {
+      return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
     }
 
     const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
-    const credits = creditsStr ? parseInt(creditsStr, 10) : 0;
+    const credits = safeParseInt(creditsStr);
 
     return c.json({ 
       userId, 
       balance: credits,
       timestamp: new Date().toISOString()
     });
-  } catch (error) {
+                } catch (error) {
     logError('user_balance', error, userId);
     return c.json({ error: 'Internal server error' }, 500);
   }
@@ -129,8 +152,8 @@ app.get('/user/:userId/transactions', async (c) => {
     const userId = c.req.param('userId');
     const limit = Math.min(parseInt(c.req.query('limit') || DEFAULT_TRANSACTION_LIMIT.toString()), MAX_TRANSACTION_LIMIT);
     
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-      return c.json({ error: 'Valid user ID is required' }, 400);
+    if (!validateUserId(userId)) {
+      return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
     }
 
     const { results } = await c.env.DB.prepare(
@@ -155,7 +178,7 @@ app.post('/validate-token', async (c) => {
     const { token } = await c.req.json<{ token: string }>();
     
     if (!token || typeof token !== 'string' || token.trim().length === 0) {
-      return c.json({ error: 'Valid token is required' }, 400);
+      return c.json({ error: ERROR_MESSAGES.INVALID_TOKEN }, 400);
     }
 
     // Proper JWT signature verification
@@ -173,10 +196,10 @@ app.post('/validate-token', async (c) => {
         userId: payload.sub,
         expiresAt: new Date(payload.exp * 1000).toISOString()
       });
-    } catch (error) {
+                    } catch (error) {
       return c.json({ valid: false, reason: 'Invalid token signature' });
-    }
-  } catch (error) {
+                    }
+                } catch (error) {
     logError('token_validation', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
@@ -187,14 +210,14 @@ app.post('/user/create', async (c) => {
   try {
     const { userId, initialCredits = 0 } = await c.req.json<{ userId: string; initialCredits?: number }>();
     
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-      return c.json({ error: 'Valid user ID is required' }, 400);
+    if (!validateUserId(userId)) {
+      return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
     }
 
     // Check if user already exists
     const existingCredits = await c.env.PLUCT_KV.get(`user:${userId}`);
     if (existingCredits !== null) {
-      return c.json({ error: 'User already exists' }, 409);
+      return c.json({ error: ERROR_MESSAGES.USER_EXISTS }, 409);
     }
 
     // Create user with initial credits
@@ -215,32 +238,32 @@ app.post('/user/create', async (c) => {
       initialBalance: initialCredits,
       message: 'User created successfully'
     });
-  } catch (error) {
-    console.error('Error in user creation:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+                } catch (error) {
+    logError('user_creation', error, userId);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
 app.post('/vend-token', async (c) => {
   try {
-    const { userId } = await c.req.json<{ userId: string }>();
-    
+  const { userId } = await c.req.json<{ userId: string }>();
+
     // Input validation
     if (!validateUserId(userId)) {
       return c.json({ error: 'Valid user ID is required' }, 400);
-    }
+  }
 
-    const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
-    const credits = creditsStr ? parseInt(creditsStr, 10) : 0;
-    
+  const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const credits = safeParseInt(creditsStr);
+
     if (credits <= 0) {
-      return c.json({ error: 'Insufficient credits' }, 403);
+      return c.json({ error: ERROR_MESSAGES.INSUFFICIENT_CREDITS }, 403);
     }
 
     const newCredits = credits - 1;
-    
+  
     // Create the transaction statement for D1
-    const transactionId = crypto.randomUUID();
+  const transactionId = crypto.randomUUID();
     const stmt = c.env.DB.prepare(
       'INSERT INTO transactions (id, user_id, type, amount, timestamp) VALUES (?, ?, ?, ?, ?)'
     ).bind(transactionId, userId, 'spend', 1, new Date().toISOString());
@@ -251,43 +274,43 @@ app.post('/vend-token', async (c) => {
       stmt.run()
     ]);
 
-    const payload = { 
-      sub: userId, 
-      jti: crypto.randomUUID(), 
+  const payload = {
+    sub: userId,
+    jti: crypto.randomUUID(),
       exp: Math.floor(Date.now() / 1000) + JWT_EXPIRATION_SECONDS 
-    };
-    const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+  };
+  const secret = new TextEncoder().encode(c.env.JWT_SECRET);
     const jwt = await new SignJWT(payload).setProtectedHeader({ alg: 'HS256' }).sign(secret);
 
-    return c.json({ token: jwt });
+  return c.json({ token: jwt });
   } catch (error) {
-    console.error('Error in vend-token:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    logError('vend_token', error, userId);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
 app.post('/add-credits', async (c) => {
   try {
     if (c.req.header('x-webhook-secret') !== c.env.WEBHOOK_SECRET) {
-      return c.json({ error: 'Unauthorized' }, 401);
+      return c.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, 401);
     }
 
-    const { userId, amount } = await c.req.json<{ userId: string; amount: number }>();
-    
+  const { userId, amount } = await c.req.json<{ userId: string; amount: number }>();
+
     // Enhanced input validation
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-      return c.json({ error: 'Valid user ID is required' }, 400);
+    if (!validateUserId(userId)) {
+      return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
     }
     
     if (!validateAmount(amount)) {
-      return c.json({ error: `Valid amount between 1 and ${MAX_CREDITS_PER_TRANSACTION} is required` }, 400);
+      return c.json({ error: ERROR_MESSAGES.INVALID_AMOUNT }, 400);
     }
 
-    const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
-    const currentCredits = currentCreditsStr ? parseInt(currentCreditsStr, 10) : 0;
-    const newCredits = currentCredits + amount;
-    
-    const transactionId = crypto.randomUUID();
+  const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const currentCredits = safeParseInt(currentCreditsStr);
+  const newCredits = currentCredits + amount;
+
+  const transactionId = crypto.randomUUID();
     const stmt = c.env.DB.prepare(
       'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?)'
     ).bind(transactionId, userId, 'add_webhook', amount, new Date().toISOString(), 'Payment gateway');
@@ -299,8 +322,8 @@ app.post('/add-credits', async (c) => {
 
     return c.json({ success: true, newBalance: newCredits });
   } catch (error) {
-    console.error('Error in add-credits:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    logError('add_credits', error, userId);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
@@ -339,8 +362,8 @@ admin.get('/users', async (c) => {
 
     return c.json(combinedResults);
   } catch (error) {
-    console.error('Error in admin/users:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    logError('admin_users', error);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
@@ -349,8 +372,8 @@ admin.get('/transactions', async (c) => {
     const { results } = await c.env.DB.prepare('SELECT * FROM transactions ORDER BY timestamp DESC LIMIT 100').all();
     return c.json(results);
   } catch (error) {
-    console.error('Error in admin/transactions:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    logError('admin_transactions', error);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
@@ -368,7 +391,7 @@ admin.post('/credits/add', async (c) => {
     }
 
     const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
-    const currentCredits = currentCreditsStr ? parseInt(currentCreditsStr, 10) : 0;
+    const currentCredits = safeParseInt(currentCreditsStr);
     const newCredits = currentCredits + amount;
     
     const transactionId = crypto.randomUUID();
@@ -380,15 +403,15 @@ admin.post('/credits/add', async (c) => {
         c.env.PLUCT_KV.put(`user:${userId}`, newCredits.toString()),
         stmt.run()
     ]);
-
+    
     return c.json({ 
-        success: true, 
-        newBalance: newCredits,
+      success: true, 
+      newBalance: newCredits,
         message: `Manually added ${amount} credits to ${userId}` 
     });
   } catch (error) {
-    console.error('Error in admin/credits/add:', error);
-    return c.json({ error: 'Internal server error' }, 500);
+    logError('admin_credits_add', error, userId);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
