@@ -1,39 +1,54 @@
 # Pluct Business Engine
 
-A secure, credit-based token vending system built for business applications using Cloudflare Workers, D1 Database, and KV Storage.
+A secure, scalable credit-based token vending platform built for business applications using Cloudflare Workers, D1 Database, and KV Storage. Now evolved into a **true platform** with API key management for external integrations.
 
-## 🚀 Overview
+## 🚀 Platform Overview
 
-The Pluct Business Engine is a professional-grade API service that manages user credits and vends JWT tokens. It's designed for applications that need to control access to premium features or services through a credit-based system.
+The Pluct Business Engine is a professional-grade API platform that manages user credits, vends JWT tokens, and provides secure API key access for external services. It's designed for applications that need to control access to premium features through a credit-based system with partner integration capabilities.
 
-## ✅ Deployment Status
+## ✅ Production Status
 
-**🎉 PRODUCTION DEPLOYMENT SUCCESSFUL!**
+**🎉 PLATFORM DEPLOYMENT SUCCESSFUL!**
 
 - **Live URL**: https://pluct-business-engine.romeo-lya2.workers.dev
-- **CI/CD Pipeline**: ✅ Fully operational with GitHub Actions
-- **Database**: ✅ D1 database with transaction logging
-- **Secrets Management**: ✅ All secrets properly configured
-- **Technical Debt**: ✅ All 10 technical debt issues resolved
-- **Security**: ✅ JWT validation, input sanitization, SQL injection protection
+- **Platform Evolution**: ✅ Now supports external integrations via API keys
+- **Database**: ✅ D1 database with transaction logging and API key management
+- **Security**: ✅ JWT validation, API key authentication, input sanitization
 - **Testing**: ✅ Comprehensive test suite with production validation
+- **Technical Debt**: ✅ All technical debt resolved with enhanced error handling
 
-### Key Features
+## 🔑 Key Platform Features
 
-- **Credit Management**: Users can earn and spend credits
-- **JWT Token Vending**: Secure token generation with expiration
-- **Transaction Logging**: Complete audit trail of all transactions
-- **Admin Interface**: Secure admin API for user and transaction management
-- **Webhook Integration**: Automated credit addition via webhooks
+### Core Credit Management
+- **Credit System**: Users can earn and spend credits
+- **Transaction Logging**: Complete audit trail of all operations
 - **User Management**: User creation, balance checking, and transaction history
+- **Admin Interface**: Secure admin API for user and transaction management
+
+### JWT Token System
+- **Secure Token Vending**: JWT token generation with expiration
+- **Token Validation**: Real-time token verification
+- **Credit-Based Access**: Tokens cost credits to generate
+
+### API Key Platform (NEW!)
+- **External Integrations**: Partner services can add credits via API keys
+- **Secure Authentication**: SHA-256 hashed API key storage
+- **Key Management**: Create, list, and revoke API keys
+- **Platform Access**: External services can integrate without exposing master secrets
+
+### Webhook Integration
+- **Automated Credits**: Credit addition via webhooks
+- **Payment Integration**: Connect with payment gateways
+- **Event-Driven**: Real-time credit updates
 
 ## 🏗️ Architecture
 
 - **Runtime**: Cloudflare Workers (serverless)
-- **Database**: Cloudflare D1 (SQLite)
+- **Database**: Cloudflare D1 (SQLite) with API key management
 - **Storage**: Cloudflare KV (key-value store)
 - **Framework**: Hono (lightweight web framework)
-- **Authentication**: JWT tokens with bearer authentication
+- **Authentication**: JWT tokens, API keys, and bearer authentication
+- **Security**: SHA-256 hashing, input validation, SQL injection protection
 
 ## 📋 API Endpoints
 
@@ -57,6 +72,20 @@ The Pluct Business Engine is a professional-grade API service that manages user 
 | `GET` | `/admin/users` | Get all users with balances | Admin Token |
 | `GET` | `/admin/transactions` | Get all transactions | Admin Token |
 | `POST` | `/admin/credits/add` | Add credits to user account | Admin Token |
+
+### API Key Management (NEW!)
+
+| Method | Endpoint | Description | Authentication |
+|--------|----------|-------------|----------------|
+| `POST` | `/admin/api-keys/create` | Create new API key | Admin Token |
+| `GET` | `/admin/api-keys` | List all API keys | Admin Token |
+| `POST` | `/admin/api-keys/:id/revoke` | Revoke API key | Admin Token |
+
+### API Key Protected Endpoints (NEW!)
+
+| Method | Endpoint | Description | Authentication |
+|--------|----------|-------------|----------------|
+| `POST` | `/v1/credits/add` | Add credits via API key | API Key (X-API-Key header) |
 
 ## 🔧 Setup and Development
 
@@ -118,10 +147,13 @@ npx wrangler dev --port 8787
 npm run build
 
 # Test locally
-.\scripts\pluct-test-complete.ps1
+npm run test:local
 
 # Test production
-.\scripts\pluct-test-production.ps1
+npm run test:production
+
+# Test complete system
+npm run test:complete
 ```
 
 ## 📊 Database Schema
@@ -139,11 +171,24 @@ CREATE TABLE transactions (
 );
 ```
 
+### API Keys Table (NEW!)
+
+```sql
+CREATE TABLE api_keys (
+    id TEXT PRIMARY KEY,
+    key_hash TEXT UNIQUE NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+```
+
 ### Transaction Types
 
 - `user_creation`: Initial credit allocation
 - `add_webhook`: Credits added via webhook
 - `admin_add`: Credits added by admin
+- `api_add`: Credits added via API key (NEW!)
 - `spend`: Credits spent on token vending
 
 ## 🔐 Security
@@ -152,108 +197,81 @@ CREATE TABLE transactions (
 
 1. **Webhook Secret**: Required for `/add-credits` endpoint
 2. **Admin Token**: Required for all `/admin/*` endpoints
-3. **User ID**: Required for user-specific endpoints
+3. **API Key**: Required for `/v1/*` endpoints (X-API-Key header)
+4. **User ID**: Required for user-specific endpoints
 
 ### Security Features
 
-- Input validation on all endpoints
-- Rate limiting protection
-- Secure JWT token generation
-- Bearer token authentication for admin endpoints
-- Webhook secret validation
+- **API Key Security**: SHA-256 hashed storage, never store raw keys
+- **Input Validation**: Comprehensive validation on all endpoints
+- **Rate Limiting**: Protection against abuse
+- **Secure JWT**: Token generation with expiration
+- **Bearer Authentication**: Admin and API key endpoints
+- **SQL Injection Protection**: Parameterized queries
 
-## 🚀 Deployment
+## 🚀 Platform Integration Examples
 
-### Automatic Deployment
-
-The project includes GitHub Actions for automatic deployment:
-
-1. Push to `master` branch
-2. GitHub Actions triggers
-3. D1 migrations applied
-4. Worker deployed to Cloudflare
-
-### Manual Deployment
+### Creating API Keys (Admin)
 
 ```bash
-# Deploy to Cloudflare
-npm run deploy
-
-# Or with Wrangler
-npx wrangler deploy
-```
-
-## 📝 Usage Examples
-
-### Create a User
-
-```bash
-curl -X POST http://localhost:8787/user/create \
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/admin/api-keys/create \
+  -H "Authorization: Bearer your-admin-token" \
   -H "Content-Type: application/json" \
-  -d '{"userId": "user123", "initialCredits": 10}'
+  -d '{"description": "Partner Integration API Key"}'
 ```
 
-### Check User Balance
+### Adding Credits via API Key (External Service)
 
 ```bash
-curl http://localhost:8787/user/user123/balance
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/v1/credits/add \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "user123", "amount": 10, "reason": "Partner bonus"}'
 ```
 
-### Add Credits via Webhook
+### Traditional Webhook Integration
 
 ```bash
-curl -X POST http://localhost:8787/add-credits \
--H "Content-Type: application/json" \
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/add-credits \
+  -H "Content-Type: application/json" \
   -H "x-webhook-secret: your-webhook-secret" \
   -d '{"userId": "user123", "amount": 5}'
-```
-
-### Vend a Token
-
-```bash
-curl -X POST http://localhost:8787/vend-token \
--H "Content-Type: application/json" \
-  -d '{"userId": "user123"}'
-```
-
-### Validate a Token
-
-```bash
-curl -X POST http://localhost:8787/validate-token \
-  -H "Content-Type: application/json" \
-  -d '{"token": "your-jwt-token"}'
-```
-
-### Admin: Get All Users
-
-```bash
-curl -H "Authorization: Bearer your-admin-token" \
-  http://localhost:8787/admin/users
 ```
 
 ## 🧪 Testing Scripts
 
 The project includes comprehensive testing scripts:
 
-- `pluct-build-test.ps1`: Tests TypeScript compilation and Wrangler build
-- `pluct-test-local.ps1`: Tests local development endpoints
-- `pluct-test-complete.ps1`: Comprehensive system testing
-- `pluct-test-production.ps1`: Tests production endpoints
-- `pluct-deploy.ps1`: Deployment automation
+- `pluct-test-unified.ps1`: Unified testing suite with educational output
+- `pluct-test-api-keys.ps1`: API key system testing
+- `pluct-deploy-unified.ps1`: Deployment automation
+
+### Running Tests
+
+```bash
+# Test production endpoints
+npm run test:production
+
+# Test complete system
+npm run test:complete
+
+# Test API key system
+powershell -ExecutionPolicy Bypass -File .\scripts\pluct-test-api-keys.ps1
+```
 
 ## 📈 Monitoring
 
 ### Health Check
 
-   ```bash
-curl http://localhost:8787/health
+```bash
+curl https://pluct-business-engine.romeo-lya2.workers.dev/health
 ```
 
-### Production URL
+### Production URLs
 
-```
-https://pluct-business-engine.romeo-lya2.workers.dev
-```
+- **Main API**: https://pluct-business-engine.romeo-lya2.workers.dev
+- **Health Check**: https://pluct-business-engine.romeo-lya2.workers.dev/health
+- **API Documentation**: https://pluct-business-engine.romeo-lya2.workers.dev/
 
 ## 🔧 Configuration
 
@@ -299,53 +317,33 @@ All endpoints return JSON responses with consistent error handling:
 }
 ```
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🆘 Support
-
-For issues and questions:
-
-1. Check the health endpoint: `/health`
-2. Review the logs in Cloudflare Workers dashboard
-3. Test locally with the provided scripts
-4. Check GitHub Actions for deployment status
-
-## 🎯 Project Completion Summary
+## 🎯 Platform Evolution Summary
 
 ### ✅ What Was Accomplished
 
-1. **✅ Cloudflare D1 Database Integration**
-   - Created and configured D1 database
-   - Implemented transaction logging schema
-   - Integrated with all credit operations
+1. **✅ Core Credit System**
+   - User management and credit tracking
+   - JWT token vending system
+   - Transaction logging and audit trails
+   - Admin interface for management
 
-2. **✅ Secure API Development**
-   - JWT token generation and validation
-   - Bearer token authentication for admin endpoints
+2. **✅ API Key Platform (NEW!)**
+   - Secure API key generation and management
+   - SHA-256 hashed storage for security
+   - External service integration capabilities
+   - Partner onboarding system
+
+3. **✅ Enhanced Security**
+   - Multiple authentication methods
    - Input validation and sanitization
    - SQL injection protection
-
-3. **✅ CI/CD Pipeline**
-   - GitHub Actions workflow for automated deployment
-   - D1 database migrations
-   - Secret management with explicit wrangler commands
-   - Production deployment verification
+   - Comprehensive error handling
 
 4. **✅ Technical Debt Resolution**
-   - Fixed 10 technical debt issues
-   - Centralized error handling and logging
-   - Type safety improvements
-   - Code consistency and maintainability
+   - Fixed all database initialization issues
+   - Enhanced error handling for all operations
+   - Improved PowerShell test scripts
+   - Updated API documentation
 
 5. **✅ Production Deployment**
    - Successfully deployed to Cloudflare Workers
@@ -353,29 +351,35 @@ For issues and questions:
    - Database migrations applied
    - Health checks and monitoring
 
-### 🚀 Production URLs
+### 🚀 Platform Capabilities
 
-- **Main API**: https://pluct-business-engine.romeo-lya2.workers.dev
-- **Health Check**: https://pluct-business-engine.romeo-lya2.workers.dev/health
-- **API Documentation**: https://pluct-business-engine.romeo-lya2.workers.dev/
+The Pluct Business Engine has evolved from a simple credit system into a **true platform**:
 
-### 🔧 Next Steps for Usage
+- **Before**: Single-purpose credit management
+- **After**: Multi-tenant platform with API key access
+- **Before**: Internal webhook integration only
+- **After**: External partner integration capabilities
+- **Before**: Manual admin operations
+- **After**: Automated partner onboarding and management
 
-1. **Test the API** using the provided curl examples
-2. **Create users** via `/user/create` endpoint
-3. **Add credits** via webhook or admin endpoints
-4. **Vend tokens** using the `/vend-token` endpoint
-5. **Monitor transactions** via admin endpoints
+### 🔧 Next Steps for Platform Usage
 
-### 📊 Monitoring
+1. **Create API Keys** for partner services
+2. **Integrate External Services** via API key authentication
+3. **Monitor Platform Usage** through admin endpoints
+4. **Scale Partner Onboarding** with automated key management
+5. **Track All Operations** through comprehensive transaction logging
+
+### 📊 Platform Monitoring
 
 - Use `/health` endpoint for service monitoring
 - Check `/admin/transactions` for audit logs
-- Monitor `/admin/users` for user activity
+- Monitor `/admin/api-keys` for key usage
+- Track `/admin/users` for user activity
 - All operations are logged in D1 database
 
 ---
 
-**🎉 PROJECT SUCCESSFULLY COMPLETED!**
+**🎉 PLATFORM SUCCESSFULLY EVOLVED!**
 
-**Built with ❤️ using Cloudflare Workers, D1, and Hono**
+**Built with ❤️ using Cloudflare Workers, D1, Hono, and now with API key management for external integrations**
