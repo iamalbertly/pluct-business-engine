@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { bearerAuth } from 'hono/bearer-auth';
 import { SignJWT, jwtVerify } from 'jose';
+import { initializeDatabase } from './initialize_db';
 
 // Define the environment bindings, including our new D1 database
 export type Bindings = {
@@ -66,6 +67,17 @@ const safeParseInt = (value: string | null, defaultValue: number = 0): number =>
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
+
+// Initialize database on startup
+app.use('*', async (c, next) => {
+  try {
+    await initializeDatabase(c.env);
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    // Continue execution even if database init fails
+  }
+  await next();
+});
 
 // Health check endpoint
 app.get('/health', (c) => {
