@@ -23,7 +23,15 @@ health.get('/health', (c) => {
       // Admin API
       'GET /admin/users': 'Get all users (requires admin token)',
       'GET /admin/transactions': 'Get all transactions (requires admin token)',
-      'POST /admin/credits/add': 'Add credits via admin (requires admin token)'
+      'POST /admin/credits/add': 'Add credits via admin (requires admin token)',
+      
+      // API Key Management
+      'POST /admin/api-keys/create': 'Create new API key (requires admin token)',
+      'GET /admin/api-keys': 'List all API keys (requires admin token)',
+      'POST /admin/api-keys/:id/revoke': 'Revoke API key (requires admin token)',
+      
+      // API Key Protected Endpoints
+      'POST /v1/credits/add': 'Add credits via API key (requires X-API-Key header)'
     }
   });
 });
@@ -47,12 +55,21 @@ health.get('/', (c) => {
       // Admin API
       'GET /admin/users': 'Get all users (requires admin token)',
       'GET /admin/transactions': 'Get all transactions (requires admin token)',
-      'POST /admin/credits/add': 'Add credits via admin (requires admin token)'
+      'POST /admin/credits/add': 'Add credits via admin (requires admin token)',
+      
+      // API Key Management
+      'POST /admin/api-keys/create': 'Create new API key (requires admin token)',
+      'GET /admin/api-keys': 'List all API keys (requires admin token)',
+      'POST /admin/api-keys/:id/revoke': 'Revoke API key (requires admin token)',
+      
+      // API Key Protected Endpoints
+      'POST /v1/credits/add': 'Add credits via API key (requires X-API-Key header)'
     },
     authentication: {
       'Webhook Secret': 'Required for /add-credits endpoint',
       'Admin Token': 'Required for /admin/* endpoints',
-      'User ID': 'Required for user-specific endpoints'
+      'User ID': 'Required for user-specific endpoints',
+      'API Key': 'Required for /v1/* endpoints (X-API-Key header)'
     }
   });
 });

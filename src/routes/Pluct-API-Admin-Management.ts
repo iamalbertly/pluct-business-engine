@@ -5,6 +5,7 @@ import { validateUserId, validateAmount, safeParseInt } from '../helpers/Pluct-C
 import { ERROR_MESSAGES } from '../helpers/Pluct-Core-Constants-Configuration';
 import { logError } from '../helpers/Pluct-Core-Logging-Utilities';
 import { getUserBalance, updateUserBalance, createTransaction } from '../helpers/Pluct-Core-Database-Operations';
+import { hashApiKey } from '../helpers/Pluct-Core-JWT-Authentication';
 
 const admin = new Hono<{ Bindings: Bindings }>();
 
@@ -82,6 +83,65 @@ admin.post('/credits/add', async (c) => {
   } catch (error) {
     logError('admin_credits_add', error, userId);
     return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
+  }
+});
+
+// API Key Management Endpoints
+admin.post('/api-keys/create', async (c) => {
+  try {
+    const { description } = await c.req.json<{ description: string }>();
+    if (!description) {
+      return c.json({ error: 'Description is required' }, 400);
+    }
+
+    // 1. Generate a new key. We will only show this to the admin ONCE.
+    const apiKey = `pluct_api_${crypto.randomUUID().replaceAll('-', '')}`;
+    
+    // 2. Hash the key for storage.
+    const keyHash = await hashApiKey(apiKey);
+
+    // 3. Store the HASH in the database, never the raw key.
+    await c.env.DB.prepare(
+      'INSERT INTO api_keys (id, key_hash, description, created_at) VALUES (?, ?, ?, ?)'
+    ).bind(crypto.randomUUID(), keyHash, description, new Date().toISOString()).run();
+
+    // 4. Return the raw key to the admin to be copied and stored securely.
+    return c.json({
+      message: "API Key created successfully. This is the only time you will see the key. Store it securely.",
+      apiKey: apiKey,
+    });
+
+  } catch (error) {
+    logError('admin_create_api_key', error);
+    return c.json({ error: 'Failed to create API key' }, 500);
+  }
+});
+
+admin.get('/api-keys', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, description, created_at, status FROM api_keys ORDER BY created_at DESC'
+    ).all();
+
+    return c.json(results);
+  } catch (error) {
+    logError('admin_list_api_keys', error);
+    return c.json({ error: 'Failed to retrieve API keys' }, 500);
+  }
+});
+
+admin.post('/api-keys/:id/revoke', async (c) => {
+  try {
+    const id = c.req.param('id');
+    
+    await c.env.DB.prepare(
+      'UPDATE api_keys SET status = ? WHERE id = ?'
+    ).bind('revoked', id).run();
+
+    return c.json({ message: 'API key revoked successfully' });
+  } catch (error) {
+    logError('admin_revoke_api_key', error);
+    return c.json({ error: 'Failed to revoke API key' }, 500);
   }
 });
 

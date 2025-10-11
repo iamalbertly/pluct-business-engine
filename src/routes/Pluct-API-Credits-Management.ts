@@ -4,6 +4,7 @@ import { validateUserId, validateAmount, safeParseInt } from '../helpers/Pluct-C
 import { ERROR_MESSAGES } from '../helpers/Pluct-Core-Constants-Configuration';
 import { logError } from '../helpers/Pluct-Core-Logging-Utilities';
 import { getUserBalance, updateUserBalance, createTransaction } from '../helpers/Pluct-Core-Database-Operations';
+import { apiKeyAuth } from '../helpers/Pluct-Core-API-Key-Authentication';
 
 const credits = new Hono<{ Bindings: Bindings }>();
 
@@ -36,6 +37,30 @@ credits.post('/add-credits', async (c) => {
     return c.json({ success: true, newBalance: newCredits });
   } catch (error) {
     logError('add_credits', error, userId);
+    return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
+  }
+});
+
+// New API key protected endpoint for adding credits
+credits.post('/v1/credits/add', apiKeyAuth, async (c) => {
+  let userId: string | undefined;
+  try {
+    const { userId: requestUserId, amount, reason } = await c.req.json<{ userId: string; amount: number; reason: string }>();
+    userId = requestUserId;
+    
+    if (!validateUserId(userId) || !validateAmount(amount)) {
+      return c.json({ error: 'Invalid userId or amount' }, 400);
+    }
+
+    const currentCredits = await getUserBalance(c.env.PLUCT_KV, userId);
+    const newCredits = currentCredits + amount;
+    
+    await createTransaction(c.env.DB, userId, 'api_add', amount, reason || 'API key credit addition');
+    await updateUserBalance(c.env.PLUCT_KV, userId, newCredits);
+    
+    return c.json({ success: true, newBalance: newCredits });
+  } catch (error) {
+    logError('api_credits_add', error, userId);
     return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
