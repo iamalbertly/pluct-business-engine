@@ -1,6 +1,7 @@
 # Logs
 
 .dev.vars
+*.ps1
 logs
 _.log
 npm-debug.log_
