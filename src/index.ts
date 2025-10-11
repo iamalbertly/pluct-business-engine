@@ -125,9 +125,8 @@ app.get('/', (c) => {
 
 // User balance check endpoint
 app.get('/user/:userId/balance', async (c) => {
+  const userId = c.req.param('userId');
   try {
-    const userId = c.req.param('userId');
-    
     if (!validateUserId(userId)) {
       return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
     }
@@ -140,7 +139,7 @@ app.get('/user/:userId/balance', async (c) => {
       balance: credits,
       timestamp: new Date().toISOString()
     });
-                } catch (error) {
+  } catch (error) {
     logError('user_balance', error, userId);
     return c.json({ error: 'Internal server error' }, 500);
   }
@@ -148,8 +147,8 @@ app.get('/user/:userId/balance', async (c) => {
 
 // User transaction history endpoint
 app.get('/user/:userId/transactions', async (c) => {
+  const userId = c.req.param('userId');
   try {
-    const userId = c.req.param('userId');
     const limit = Math.min(parseInt(c.req.query('limit') || DEFAULT_TRANSACTION_LIMIT.toString()), MAX_TRANSACTION_LIMIT);
     
     if (!validateUserId(userId)) {
@@ -194,7 +193,7 @@ app.post('/validate-token', async (c) => {
       return c.json({ 
         valid: true, 
         userId: payload.sub,
-        expiresAt: new Date(payload.exp * 1000).toISOString()
+        expiresAt: payload.exp ? new Date(payload.exp * 1000).toISOString() : null
       });
                     } catch (error) {
       return c.json({ valid: false, reason: 'Invalid token signature' });
@@ -207,8 +206,10 @@ app.post('/validate-token', async (c) => {
 
 // User creation endpoint
 app.post('/user/create', async (c) => {
+  let userId: string | undefined;
   try {
-    const { userId, initialCredits = 0 } = await c.req.json<{ userId: string; initialCredits?: number }>();
+    const { userId: requestUserId, initialCredits = 0 } = await c.req.json<{ userId: string; initialCredits?: number }>();
+    userId = requestUserId;
     
     if (!validateUserId(userId)) {
       return c.json({ error: ERROR_MESSAGES.INVALID_USER_ID }, 400);
@@ -238,22 +239,24 @@ app.post('/user/create', async (c) => {
       initialBalance: initialCredits,
       message: 'User created successfully'
     });
-                } catch (error) {
+  } catch (error) {
     logError('user_creation', error, userId);
     return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
   }
 });
 
 app.post('/vend-token', async (c) => {
+  let userId: string | undefined;
   try {
-  const { userId } = await c.req.json<{ userId: string }>();
+    const { userId: requestUserId } = await c.req.json<{ userId: string }>();
+    userId = requestUserId;
 
     // Input validation
     if (!validateUserId(userId)) {
       return c.json({ error: 'Valid user ID is required' }, 400);
-  }
+    }
 
-  const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
     const credits = safeParseInt(creditsStr);
 
     if (credits <= 0) {
@@ -263,7 +266,7 @@ app.post('/vend-token', async (c) => {
     const newCredits = credits - 1;
   
     // Create the transaction statement for D1
-  const transactionId = crypto.randomUUID();
+    const transactionId = crypto.randomUUID();
     const stmt = c.env.DB.prepare(
       'INSERT INTO transactions (id, user_id, type, amount, timestamp) VALUES (?, ?, ?, ?, ?)'
     ).bind(transactionId, userId, 'spend', 1, new Date().toISOString());
@@ -274,15 +277,15 @@ app.post('/vend-token', async (c) => {
       stmt.run()
     ]);
 
-  const payload = {
-    sub: userId,
-    jti: crypto.randomUUID(),
+    const payload = {
+      sub: userId,
+      jti: crypto.randomUUID(),
       exp: Math.floor(Date.now() / 1000) + JWT_EXPIRATION_SECONDS 
-  };
-  const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+    };
+    const secret = new TextEncoder().encode(c.env.JWT_SECRET);
     const jwt = await new SignJWT(payload).setProtectedHeader({ alg: 'HS256' }).sign(secret);
 
-  return c.json({ token: jwt });
+    return c.json({ token: jwt });
   } catch (error) {
     logError('vend_token', error, userId);
     return c.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, 500);
@@ -290,12 +293,14 @@ app.post('/vend-token', async (c) => {
 });
 
 app.post('/add-credits', async (c) => {
+  let userId: string | undefined;
   try {
     if (c.req.header('x-webhook-secret') !== c.env.WEBHOOK_SECRET) {
       return c.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, 401);
     }
 
-  const { userId, amount } = await c.req.json<{ userId: string; amount: number }>();
+    const { userId: requestUserId, amount } = await c.req.json<{ userId: string; amount: number }>();
+    userId = requestUserId;
 
     // Enhanced input validation
     if (!validateUserId(userId)) {
@@ -306,11 +311,11 @@ app.post('/add-credits', async (c) => {
       return c.json({ error: ERROR_MESSAGES.INVALID_AMOUNT }, 400);
     }
 
-  const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
     const currentCredits = safeParseInt(currentCreditsStr);
-  const newCredits = currentCredits + amount;
+    const newCredits = currentCredits + amount;
 
-  const transactionId = crypto.randomUUID();
+    const transactionId = crypto.randomUUID();
     const stmt = c.env.DB.prepare(
       'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?)'
     ).bind(transactionId, userId, 'add_webhook', amount, new Date().toISOString(), 'Payment gateway');
@@ -355,7 +360,7 @@ admin.get('/users', async (c) => {
 
     // Simple join in memory for the demo
     const userMap = new Map(userCredits.map(u => [u.user_id, u.credits]));
-    const combinedResults = results.map((row: { user_id: string; transaction_count: number; total_spent: number }) => ({
+    const combinedResults = (results as { user_id: string; transaction_count: number; total_spent: number }[]).map((row) => ({
         ...row,
         current_credits: userMap.get(row.user_id) || 0
     }));
@@ -378,8 +383,10 @@ admin.get('/transactions', async (c) => {
 });
 
 admin.post('/credits/add', async (c) => {
+  let userId: string | undefined;
   try {
-    const { userId, amount, reason } = await c.req.json<{ userId: string; amount: number; reason: string }>();
+    const { userId: requestUserId, amount, reason } = await c.req.json<{ userId: string; amount: number; reason: string }>();
+    userId = requestUserId;
     
     // Enhanced input validation
     if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
