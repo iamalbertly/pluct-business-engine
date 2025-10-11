@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bearerAuth } from 'hono/bearer-auth';
-import { SignJWT } from 'jose';
+import { SignJWT, jwtVerify } from 'jose';
 
 // Define the environment bindings, including our new D1 database
 export type Bindings = {
@@ -9,6 +9,37 @@ export type Bindings = {
   JWT_SECRET: string;
   WEBHOOK_SECRET: string;
   ADMIN_SECRET: string; // For securing admin endpoints
+};
+
+// Constants to avoid magic numbers
+const JWT_EXPIRATION_SECONDS = 60;
+const MAX_CREDITS_PER_TRANSACTION = 10000;
+const DEFAULT_TRANSACTION_LIMIT = 50;
+const MAX_TRANSACTION_LIMIT = 100;
+
+// Input validation helper
+const validateUserId = (userId: string): boolean => {
+  return userId && typeof userId === 'string' && userId.trim().length > 0 && userId.length <= 100;
+};
+
+const validateAmount = (amount: number): boolean => {
+  return typeof amount === 'number' && amount > 0 && amount <= MAX_CREDITS_PER_TRANSACTION;
+};
+
+// Sanitize input to prevent SQL injection
+const sanitizeInput = (input: string): string => {
+  return input.replace(/['"\\;]/g, '');
+};
+
+// Structured logging helper
+const logError = (context: string, error: unknown, userId?: string) => {
+  const errorInfo = {
+    context,
+    timestamp: new Date().toISOString(),
+    userId: userId || 'unknown',
+    error: error instanceof Error ? error.message : String(error)
+  };
+  console.error(JSON.stringify(errorInfo));
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -87,7 +118,7 @@ app.get('/user/:userId/balance', async (c) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error in user balance:', error);
+    logError('user_balance', error, userId);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -96,7 +127,7 @@ app.get('/user/:userId/balance', async (c) => {
 app.get('/user/:userId/transactions', async (c) => {
   try {
     const userId = c.req.param('userId');
-    const limit = parseInt(c.req.query('limit') || '50');
+    const limit = Math.min(parseInt(c.req.query('limit') || DEFAULT_TRANSACTION_LIMIT.toString()), MAX_TRANSACTION_LIMIT);
     
     if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
       return c.json({ error: 'Valid user ID is required' }, 400);
@@ -113,7 +144,7 @@ app.get('/user/:userId/transactions', async (c) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error in user transactions:', error);
+    logError('user_transactions', error, userId);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -127,10 +158,10 @@ app.post('/validate-token', async (c) => {
       return c.json({ error: 'Valid token is required' }, 400);
     }
 
-    // For now, we'll just check if the token exists and is not expired
-    // In a real implementation, you'd verify the JWT signature
+    // Proper JWT signature verification
     try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
+      const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+      const { payload } = await jwtVerify(token, secret);
       const now = Math.floor(Date.now() / 1000);
       
       if (payload.exp && payload.exp < now) {
@@ -142,11 +173,11 @@ app.post('/validate-token', async (c) => {
         userId: payload.sub,
         expiresAt: new Date(payload.exp * 1000).toISOString()
       });
-    } catch {
-      return c.json({ valid: false, reason: 'Invalid token format' });
+    } catch (error) {
+      return c.json({ valid: false, reason: 'Invalid token signature' });
     }
   } catch (error) {
-    console.error('Error in token validation:', error);
+    logError('token_validation', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
@@ -195,7 +226,7 @@ app.post('/vend-token', async (c) => {
     const { userId } = await c.req.json<{ userId: string }>();
     
     // Input validation
-    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+    if (!validateUserId(userId)) {
       return c.json({ error: 'Valid user ID is required' }, 400);
     }
 
@@ -223,7 +254,7 @@ app.post('/vend-token', async (c) => {
     const payload = { 
       sub: userId, 
       jti: crypto.randomUUID(), 
-      exp: Math.floor(Date.now() / 1000) + 60 
+      exp: Math.floor(Date.now() / 1000) + JWT_EXPIRATION_SECONDS 
     };
     const secret = new TextEncoder().encode(c.env.JWT_SECRET);
     const jwt = await new SignJWT(payload).setProtectedHeader({ alg: 'HS256' }).sign(secret);
@@ -248,8 +279,8 @@ app.post('/add-credits', async (c) => {
       return c.json({ error: 'Valid user ID is required' }, 400);
     }
     
-    if (!amount || typeof amount !== 'number' || amount <= 0 || amount > 10000) {
-      return c.json({ error: 'Valid amount between 1 and 10000 is required' }, 400);
+    if (!validateAmount(amount)) {
+      return c.json({ error: `Valid amount between 1 and ${MAX_CREDITS_PER_TRANSACTION} is required` }, 400);
     }
 
     const currentCreditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
@@ -301,7 +332,7 @@ admin.get('/users', async (c) => {
 
     // Simple join in memory for the demo
     const userMap = new Map(userCredits.map(u => [u.user_id, u.credits]));
-    const combinedResults = results.map((row: any) => ({
+    const combinedResults = results.map((row: { user_id: string; transaction_count: number; total_spent: number }) => ({
         ...row,
         current_credits: userMap.get(row.user_id) || 0
     }));

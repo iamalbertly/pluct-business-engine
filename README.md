@@ -50,7 +50,7 @@ The Pluct Business Engine is a professional-grade API service that manages user 
 
 ### Prerequisites
 
-- Node.js 20+ 
+- Node.js 20+
 - Cloudflare account
 - Wrangler CLI
 
