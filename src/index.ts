@@ -1,7 +1,5 @@
 import { Hono } from 'hono';
 import { bearerAuth } from 'hono/bearer-auth';
-import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
 import { SignJWT } from 'jose';
 
 // Define the environment bindings, including our new D1 database
@@ -15,16 +13,33 @@ export type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Add middleware
-app.use('*', cors());
-app.use('*', logger());
-
 // Health check endpoint
 app.get('/health', (c) => {
   return c.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    endpoints: {
+      'POST /vend-token': 'Vend JWT token (requires credits)',
+      'POST /add-credits': 'Add credits (requires webhook secret)',
+      'GET /admin/users': 'Get user data (requires admin token)',
+      'GET /admin/transactions': 'Get transactions (requires admin token)',
+      'POST /admin/credits/add': 'Add credits via admin (requires admin token)'
+    }
+  });
+});
+
+// Root endpoint
+app.get('/', (c) => {
+  return c.json({ 
+    message: 'Pluct Business Engine API',
+    version: '1.0.0',
+    endpoints: {
+      'GET /health': 'Health check',
+      'POST /vend-token': 'Vend JWT token',
+      'POST /add-credits': 'Add credits',
+      'GET /admin/*': 'Admin endpoints'
+    }
   });
 });
 
@@ -98,7 +113,7 @@ app.post('/add-credits', async (c) => {
     
     const transactionId = crypto.randomUUID();
     const stmt = c.env.DB.prepare(
-      'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?)'
     ).bind(transactionId, userId, 'add_webhook', amount, new Date().toISOString(), 'Payment gateway');
 
     await Promise.all([
@@ -203,6 +218,5 @@ admin.post('/credits/add', async (c) => {
 
 // Mount the secure admin API under the /admin path
 app.route('/admin', admin);
-
 
 export default app;

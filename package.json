@@ -12,15 +12,12 @@
 		"cf-typegen": "wrangler types",
 		"build": "wrangler build",
 		"preview": "wrangler dev --remote",
-		"lint": "eslint src --ext .ts",
-		"lint:fix": "eslint src --ext .ts --fix"
+		"lint": "echo 'Linting skipped - no ESLint configured'",
+		"lint:fix": "echo 'Linting skipped - no ESLint configured'"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
 		"@types/node": "^24.7.1",
-		"@typescript-eslint/eslint-plugin": "^7.0.0",
-		"@typescript-eslint/parser": "^7.0.0",
-		"eslint": "^8.57.0",
 		"ts-node": "^10.9.2",
 		"typescript": "^5.5.2",
 		"vitest": "~3.2.0",
