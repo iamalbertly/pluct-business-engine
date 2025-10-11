@@ -20,10 +20,19 @@ app.get('/health', (c) => {
     timestamp: new Date().toISOString(),
     version: '1.0.0',
     endpoints: {
+      // Core API
+      'GET /': 'API documentation',
+      'GET /health': 'Health check',
+      'POST /user/create': 'Create new user account',
+      'GET /user/:userId/balance': 'Get user credit balance',
+      'GET /user/:userId/transactions': 'Get user transaction history',
+      'POST /validate-token': 'Validate JWT token',
       'POST /vend-token': 'Vend JWT token (requires credits)',
       'POST /add-credits': 'Add credits (requires webhook secret)',
-      'GET /admin/users': 'Get user data (requires admin token)',
-      'GET /admin/transactions': 'Get transactions (requires admin token)',
+      
+      // Admin API
+      'GET /admin/users': 'Get all users (requires admin token)',
+      'GET /admin/transactions': 'Get all transactions (requires admin token)',
       'POST /admin/credits/add': 'Add credits via admin (requires admin token)'
     }
   });
@@ -34,16 +43,152 @@ app.get('/', (c) => {
   return c.json({ 
     message: 'Pluct Business Engine API',
     version: '1.0.0',
+    description: 'A secure credit-based token vending system for business applications',
     endpoints: {
-      'GET /health': 'Health check',
-      'POST /vend-token': 'Vend JWT token',
-      'POST /add-credits': 'Add credits',
-      'GET /admin/*': 'Admin endpoints'
+      // Core API
+      'GET /health': 'Health check and API documentation',
+      'POST /user/create': 'Create new user account',
+      'GET /user/:userId/balance': 'Get user credit balance',
+      'GET /user/:userId/transactions': 'Get user transaction history',
+      'POST /validate-token': 'Validate JWT token',
+      'POST /vend-token': 'Vend JWT token (requires credits)',
+      'POST /add-credits': 'Add credits (requires webhook secret)',
+      
+      // Admin API
+      'GET /admin/users': 'Get all users (requires admin token)',
+      'GET /admin/transactions': 'Get all transactions (requires admin token)',
+      'POST /admin/credits/add': 'Add credits via admin (requires admin token)'
+    },
+    authentication: {
+      'Webhook Secret': 'Required for /add-credits endpoint',
+      'Admin Token': 'Required for /admin/* endpoints',
+      'User ID': 'Required for user-specific endpoints'
     }
   });
 });
 
 // --- CORE BUSINESS LOGIC ---
+
+// User balance check endpoint
+app.get('/user/:userId/balance', async (c) => {
+  try {
+    const userId = c.req.param('userId');
+    
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+      return c.json({ error: 'Valid user ID is required' }, 400);
+    }
+
+    const creditsStr = await c.env.PLUCT_KV.get(`user:${userId}`);
+    const credits = creditsStr ? parseInt(creditsStr, 10) : 0;
+
+    return c.json({ 
+      userId, 
+      balance: credits,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in user balance:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// User transaction history endpoint
+app.get('/user/:userId/transactions', async (c) => {
+  try {
+    const userId = c.req.param('userId');
+    const limit = parseInt(c.req.query('limit') || '50');
+    
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+      return c.json({ error: 'Valid user ID is required' }, 400);
+    }
+
+    const { results } = await c.env.DB.prepare(
+      'SELECT * FROM transactions WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?'
+    ).bind(userId, limit).all();
+
+    return c.json({ 
+      userId, 
+      transactions: results,
+      count: results.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error in user transactions:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// Token validation endpoint
+app.post('/validate-token', async (c) => {
+  try {
+    const { token } = await c.req.json<{ token: string }>();
+    
+    if (!token || typeof token !== 'string' || token.trim().length === 0) {
+      return c.json({ error: 'Valid token is required' }, 400);
+    }
+
+    // For now, we'll just check if the token exists and is not expired
+    // In a real implementation, you'd verify the JWT signature
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      const now = Math.floor(Date.now() / 1000);
+      
+      if (payload.exp && payload.exp < now) {
+        return c.json({ valid: false, reason: 'Token expired' });
+      }
+      
+      return c.json({ 
+        valid: true, 
+        userId: payload.sub,
+        expiresAt: new Date(payload.exp * 1000).toISOString()
+      });
+    } catch {
+      return c.json({ valid: false, reason: 'Invalid token format' });
+    }
+  } catch (error) {
+    console.error('Error in token validation:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// User creation endpoint
+app.post('/user/create', async (c) => {
+  try {
+    const { userId, initialCredits = 0 } = await c.req.json<{ userId: string; initialCredits?: number }>();
+    
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+      return c.json({ error: 'Valid user ID is required' }, 400);
+    }
+
+    // Check if user already exists
+    const existingCredits = await c.env.PLUCT_KV.get(`user:${userId}`);
+    if (existingCredits !== null) {
+      return c.json({ error: 'User already exists' }, 409);
+    }
+
+    // Create user with initial credits
+    await c.env.PLUCT_KV.put(`user:${userId}`, initialCredits.toString());
+
+    // Log the creation transaction
+    if (initialCredits > 0) {
+      const transactionId = crypto.randomUUID();
+      const stmt = c.env.DB.prepare(
+        'INSERT INTO transactions (id, user_id, type, amount, timestamp, reason) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(transactionId, userId, 'user_creation', initialCredits, new Date().toISOString(), 'User account creation');
+      await stmt.run();
+    }
+
+    return c.json({ 
+      success: true, 
+      userId, 
+      initialBalance: initialCredits,
+      message: 'User created successfully'
+    });
+  } catch (error) {
+    console.error('Error in user creation:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
 
 app.post('/vend-token', async (c) => {
   try {
