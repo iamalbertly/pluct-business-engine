@@ -36,7 +36,7 @@ git commit -m "feat: Complete D1 database integration and CI/CD pipeline
 
 # Push to trigger deployment
 Write-Host "Pushing to GitHub to trigger deployment..." -ForegroundColor Yellow
-git push origin $currentBranch
+git push origin master
 
 Write-Host "Push completed!" -ForegroundColor Green
 Write-Host "Check GitHub Actions: https://github.com/iamalbertly/pluct-business-engine/actions" -ForegroundColor Cyan

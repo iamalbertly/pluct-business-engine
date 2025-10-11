@@ -16,10 +16,5 @@
       "database_name": "pluct-db",
       "database_id": "d28d34a0-1e7a-402b-bdc8-f00bf961cad4"
     }
-  ],
-  "vars": {
-    "JWT_SECRET": "local-dev-jwt-secret-never-use-in-prod-12345",
-    "WEBHOOK_SECRET": "local-dev-webhook-secret-never-use-in-prod-67890",
-    "ADMIN_SECRET": "local-dev-admin-secret-never-use-in-prod-12345"
-  }
+  ]
 }
