@@ -1,91 +1,69 @@
-# Pluct Business Engine
+# Pluct Business Engine - Mobile App Gateway
 
-A secure, scalable credit-based token vending platform built for business applications using Cloudflare Workers, D1 Database, and KV Storage. Now evolved into a **true platform** with API key management for external integrations.
+A secure, scalable mobile app gateway built for the Pluct mobile application using Cloudflare Workers and KV Storage. This gateway serves as the **only interface** the mobile Pluct app talks to, providing token vending, TTTranscribe proxying, metadata resolution, and credit enforcement.
 
-## 🚀 Platform Overview
+## 🚀 Gateway Overview
 
-The Pluct Business Engine is a professional-grade API platform that manages user credits, vends JWT tokens, and provides secure API key access for external services. It's designed for applications that need to control access to premium features through a credit-based system with partner integration capabilities.
+The Pluct Business Engine is now a **mobile app gateway** that vends tokens, calls TTTranscribe on the app's behalf, returns `request_id`, and provides status and metadata while enforcing credits. It's designed to be the single point of contact for the mobile Pluct application.
 
-## ✅ Production Status
+## ✅ Gateway Status
 
-**🎉 PLATFORM DEPLOYMENT SUCCESSFUL!**
+**🎉 GATEWAY IMPLEMENTATION SUCCESSFUL!**
 
 - **Live URL**: https://pluct-business-engine.romeo-lya2.workers.dev
-- **Platform Evolution**: ✅ Now supports external integrations via API keys
-- **Database**: ✅ D1 database with transaction logging and API key management
-- **Security**: ✅ JWT validation, API key authentication, input sanitization
-- **Testing**: ✅ Comprehensive test suite with production validation
-- **Technical Debt**: ✅ All technical debt resolved with enhanced error handling
+- **Gateway Architecture**: ✅ Mobile app gateway with token vending and TTTranscribe proxying
+- **Storage**: ✅ KV storage for credits, profiles, and metadata caching
+- **Security**: ✅ JWT validation, credit enforcement, internal secrets
+- **Testing**: ✅ Comprehensive test suite with gateway endpoint validation
+- **Technical Debt**: ✅ All technical debt resolved with clean gateway architecture
 
-## 🔑 Key Platform Features
+## 🔑 Key Gateway Features
 
-### Core Credit Management
-- **Credit System**: Users can earn and spend credits
-- **Transaction Logging**: Complete audit trail of all operations
-- **User Management**: User creation, balance checking, and transaction history
-- **Admin Interface**: Secure admin API for user and transaction management
+### Token Vending System
+- **JWT Token Generation**: 15-minute expiration tokens with `ttt:transcribe` scope
+- **Credit Enforcement**: Spends 1 credit per token
+- **Secure Authentication**: HMAC-SHA256 signed tokens
+- **Logging**: `be:vending user=<id> ok=true/false` logs
 
-### JWT Token System
-- **Secure Token Vending**: JWT token generation with expiration
-- **Token Validation**: Real-time token verification
-- **Credit-Based Access**: Tokens cost credits to generate
+### TTTranscribe Proxy
+- **Secure Forwarding**: Proxies requests to TTTranscribe with internal secrets
+- **JWT Validation**: Validates app tokens before proxying
+- **Status Monitoring**: `/ttt/status/:id` endpoint for transcription status
+- **Logging**: `be:ttt call=transcribe/status http=<status>` logs
 
-### API Key Platform (NEW!)
-- **External Integrations**: Partner services can add credits via API keys
-- **Secure Authentication**: SHA-256 hashed API key storage
-- **Key Management**: Create, list, and revoke API keys
-- **Platform Access**: External services can integrate without exposing master secrets
+### Metadata Resolution
+- **TikTok Parsing**: Server-side TikTok page parsing
+- **Smart Caching**: 1-6 hour TTL with randomized expiration
+- **Rich Metadata**: Returns title, author, description, duration, handle
+- **KV Storage**: Cached metadata in `meta:<url>` keys
 
-### Webhook Integration
-- **Automated Credits**: Credit addition via webhooks
-- **Payment Integration**: Connect with payment gateways
-- **Event-Driven**: Real-time credit updates
+### Credit Management
+- **KV Storage**: `credits:<userId>` → integer balance
+- **Admin Interface**: `/v1/credits/add` for credit top-up
+- **Credit Validation**: Prevents token vending without credits
+- **Profile Storage**: `profile:<userId>` → JSON profile data
 
-## 🏗️ Architecture
+## 🏗️ Gateway Architecture
 
 - **Runtime**: Cloudflare Workers (serverless)
-- **Database**: Cloudflare D1 (SQLite) with API key management
-- **Storage**: Cloudflare KV (key-value store)
+- **Storage**: Cloudflare KV (key-value store) for credits, profiles, and metadata
 - **Framework**: Hono (lightweight web framework)
-- **Authentication**: JWT tokens, API keys, and bearer authentication
-- **Security**: SHA-256 hashing, input validation, SQL injection protection
+- **Authentication**: JWT tokens with HMAC-SHA256 signing
+- **Security**: Internal secrets, credit enforcement, CORS support
+- **Proxy**: Secure forwarding to TTTranscribe with authentication
 
-## 📋 API Endpoints
+## 📋 Gateway Endpoints
 
-### Core API
+### Core Gateway API
 
 | Method | Endpoint | Description | Authentication |
 |--------|----------|-------------|----------------|
-| `GET` | `/` | API documentation | None |
-| `GET` | `/health` | Health check and endpoint list | None |
-| `POST` | `/user/create` | Create new user account | None |
-| `GET` | `/user/:userId/balance` | Get user credit balance | None |
-| `GET` | `/user/:userId/transactions` | Get user transaction history | None |
-| `POST` | `/validate-token` | Validate JWT token | None |
+| `GET` | `/health` | Health check with route list | None |
+| `POST` | `/v1/credits/add` | Admin credit top-up | X-API-Key header |
 | `POST` | `/vend-token` | Vend JWT token (costs 1 credit) | None |
-| `POST` | `/add-credits` | Add credits via webhook | Webhook Secret |
-
-### Admin API
-
-| Method | Endpoint | Description | Authentication |
-|--------|----------|-------------|----------------|
-| `GET` | `/admin/users` | Get all users with balances | Admin Token |
-| `GET` | `/admin/transactions` | Get all transactions | Admin Token |
-| `POST` | `/admin/credits/add` | Add credits to user account | Admin Token |
-
-### API Key Management (NEW!)
-
-| Method | Endpoint | Description | Authentication |
-|--------|----------|-------------|----------------|
-| `POST` | `/admin/api-keys/create` | Create new API key | Admin Token |
-| `GET` | `/admin/api-keys` | List all API keys | Admin Token |
-| `POST` | `/admin/api-keys/:id/revoke` | Revoke API key | Admin Token |
-
-### API Key Protected Endpoints (NEW!)
-
-| Method | Endpoint | Description | Authentication |
-|--------|----------|-------------|----------------|
-| `POST` | `/v1/credits/add` | Add credits via API key | API Key (X-API-Key header) |
+| `POST` | `/ttt/transcribe` | Proxy to TTTranscribe | Bearer JWT |
+| `GET` | `/ttt/status/:id` | Check transcription status | Bearer JWT |
+| `POST` | `/meta/resolve` | Resolve TikTok metadata | None |
 
 ## 🔧 Setup and Development
 
@@ -115,19 +93,16 @@ cp .dev.vars.example .dev.vars
 Create a `.dev.vars` file with the following variables:
 
 ```bash
-# Cloudflare
-CF_API_TOKEN=your_cloudflare_api_token
-CF_ACCOUNT_ID=your_cloudflare_account_id
+# Gateway Secrets
+ENGINE_JWT_SECRET=your_jwt_secret
+ENGINE_ADMIN_KEY=your_admin_key
+TTT_SHARED_SECRET=your_ttt_secret
 
-# App Secrets
-ADMIN_SECRET=your_admin_secret
-JWT_SECRET=your_jwt_secret
-WEBHOOK_SECRET=your_webhook_secret
+# TTTranscribe Configuration
+TTT_BASE=https://your-ttt-host
 
-# Optional
-D1_DATABASE=pluct-db
-KV_NAMESPACE=PLUCT_KV
-NODE_ENV=development
+# KV Namespace
+KV_USERS=your_kv_namespace_id
 ```
 
 ### Local Development
@@ -146,8 +121,8 @@ npx wrangler dev --port 8787
 # Test build
 npm run build
 
-# Test locally
-npm run test:local
+# Test new gateway endpoints
+powershell -ExecutionPolicy Bypass -File .\test-new-endpoints.ps1
 
 # Test production
 npm run test:production
@@ -156,107 +131,99 @@ npm run test:production
 npm run test:complete
 ```
 
-## 📊 Database Schema
+## 📊 KV Storage Structure
 
-### Transactions Table
+### Credit Management
 
-```sql
-CREATE TABLE transactions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    amount INTEGER NOT NULL,
-    timestamp TEXT NOT NULL,
-    reason TEXT
-);
+```
+KV_USERS:credits:<userId> → integer balance
+KV_USERS:profile:<userId> → JSON profile data
 ```
 
-### API Keys Table (NEW!)
+### Metadata Caching
 
-```sql
-CREATE TABLE api_keys (
-    id TEXT PRIMARY KEY,
-    key_hash TEXT UNIQUE NOT NULL,
-    description TEXT,
-    created_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active'
-);
+```
+KV_USERS:meta:<url> → JSON metadata (1-6h TTL)
 ```
 
-### Transaction Types
+### Storage Keys
 
-- `user_creation`: Initial credit allocation
-- `add_webhook`: Credits added via webhook
-- `admin_add`: Credits added by admin
-- `api_add`: Credits added via API key (NEW!)
-- `spend`: Credits spent on token vending
+- `credits:<userId>` → User credit balance
+- `profile:<userId>` → User profile information
+- `meta:<url>` → Cached TikTok metadata
 
 ## 🔐 Security
 
 ### Authentication Methods
 
-1. **Webhook Secret**: Required for `/add-credits` endpoint
-2. **Admin Token**: Required for all `/admin/*` endpoints
-3. **API Key**: Required for `/v1/*` endpoints (X-API-Key header)
-4. **User ID**: Required for user-specific endpoints
+1. **JWT Tokens**: Required for `/ttt/*` endpoints (Bearer token)
+2. **Admin Keys**: Required for `/v1/credits/add` (X-API-Key header)
+3. **Internal Secrets**: `TTT_SHARED_SECRET` for TTTranscribe communication
 
 ### Security Features
 
-- **API Key Security**: SHA-256 hashed storage, never store raw keys
+- **JWT Security**: HMAC-SHA256 signed tokens with 15-minute expiration
+- **Credit Enforcement**: Prevents token vending without credits
+- **Internal Secrets**: Secure communication with TTTranscribe
+- **CORS Support**: Mobile app integration ready
 - **Input Validation**: Comprehensive validation on all endpoints
-- **Rate Limiting**: Protection against abuse
-- **Secure JWT**: Token generation with expiration
-- **Bearer Authentication**: Admin and API key endpoints
-- **SQL Injection Protection**: Parameterized queries
+- **Logging**: Structured logging for all operations
 
-## 🚀 Platform Integration Examples
+## 🚀 Gateway Integration Examples
 
-### Creating API Keys (Admin)
-
-```bash
-curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/admin/api-keys/create \
-  -H "Authorization: Bearer your-admin-token" \
-  -H "Content-Type: application/json" \
-  -d '{"description": "Partner Integration API Key"}'
-```
-
-### Adding Credits via API Key (External Service)
+### Adding Credits (Admin)
 
 ```bash
 curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/v1/credits/add \
-  -H "X-API-Key: your-api-key" \
+  -H "X-API-Key: your-admin-key" \
   -H "Content-Type: application/json" \
-  -d '{"userId": "user123", "amount": 10, "reason": "Partner bonus"}'
+  -d '{"userId": "mobile", "amount": 100, "reason": "bootstrap"}'
 ```
 
-### Traditional Webhook Integration
+### Vend Token (Mobile App)
 
 ```bash
-curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/add-credits \
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/vend-token \
   -H "Content-Type: application/json" \
-  -H "x-webhook-secret: your-webhook-secret" \
-  -d '{"userId": "user123", "amount": 5}'
+  -d '{"userId": "mobile"}'
+```
+
+### TTTranscribe Proxy (Mobile App)
+
+```bash
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/ttt/transcribe \
+  -H "Authorization: Bearer your-jwt-token" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.tiktok.com/@user/video/123"}'
+```
+
+### Metadata Resolution (Mobile App)
+
+```bash
+curl -X POST https://pluct-business-engine.romeo-lya2.workers.dev/meta/resolve \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.tiktok.com/@user/video/123"}'
 ```
 
 ## 🧪 Testing Scripts
 
 The project includes comprehensive testing scripts:
 
+- `test-new-endpoints.ps1`: Gateway endpoint testing
 - `pluct-test-unified.ps1`: Unified testing suite with educational output
-- `pluct-test-api-keys.ps1`: API key system testing
 - `pluct-deploy-unified.ps1`: Deployment automation
 
 ### Running Tests
 
 ```bash
+# Test new gateway endpoints
+powershell -ExecutionPolicy Bypass -File .\test-new-endpoints.ps1
+
 # Test production endpoints
 npm run test:production
 
 # Test complete system
 npm run test:complete
-
-# Test API key system
-powershell -ExecutionPolicy Bypass -File .\scripts\pluct-test-api-keys.ps1
 ```
 
 ## 📈 Monitoring
@@ -269,32 +236,37 @@ curl https://pluct-business-engine.romeo-lya2.workers.dev/health
 
 ### Production URLs
 
-- **Main API**: https://pluct-business-engine.romeo-lya2.workers.dev
+- **Gateway API**: https://pluct-business-engine.romeo-lya2.workers.dev
 - **Health Check**: https://pluct-business-engine.romeo-lya2.workers.dev/health
-- **API Documentation**: https://pluct-business-engine.romeo-lya2.workers.dev/
+- **Available Routes**: `/vend-token`, `/ttt/transcribe`, `/ttt/status/:id`, `/meta/resolve`
 
 ## 🔧 Configuration
 
 ### Wrangler Configuration
 
-The `wrangler.jsonc` file contains:
+The `wrangler.toml` file contains:
 
 - Worker name and main entry point
-- D1 database binding
 - KV namespace binding
 - Environment variables
+- Secrets configuration
 
-### GitHub Actions
+### Deployment
 
-The `.github/workflows/deploy.yml` file handles:
+```bash
+# Set up KV namespace
+npx wrangler kv namespace create KV_USERS
 
-- Node.js 20 setup
-- Dependency installation
-- D1 migration application
-- Worker deployment
-- Deployment verification
+# Set secrets
+npx wrangler secret put ENGINE_JWT_SECRET
+npx wrangler secret put ENGINE_ADMIN_KEY
+npx wrangler secret put TTT_SHARED_SECRET
 
-## 📚 API Documentation
+# Deploy
+npx wrangler publish
+```
+
+## 📚 Gateway Documentation
 
 ### Response Formats
 
@@ -302,9 +274,8 @@ All endpoints return JSON responses with consistent error handling:
 
 ```json
 {
-  "success": true,
-  "data": {...},
-  "timestamp": "2024-01-01T00:00:00.000Z"
+  "ok": true,
+  "routes": ["/vend-token", "/ttt/transcribe", "/ttt/status/:id", "/meta/resolve"]
 }
 ```
 
@@ -312,74 +283,79 @@ All endpoints return JSON responses with consistent error handling:
 
 ```json
 {
-  "error": "Error message",
-  "code": 400
+  "error": "no_credits",
+  "code": 403
 }
 ```
 
-## 🎯 Platform Evolution Summary
+### Logging Format
+
+- `be:vending user=<id> ok=true/false` - Token vending logs
+- `be:ttt call=transcribe/status http=<status>` - Proxy call logs
+
+## 🎯 Gateway Implementation Summary
 
 ### ✅ What Was Accomplished
 
-1. **✅ Core Credit System**
-   - User management and credit tracking
-   - JWT token vending system
-   - Transaction logging and audit trails
-   - Admin interface for management
+1. **✅ Mobile App Gateway**
+   - Token vending with JWT authentication
+   - TTTranscribe proxy with internal secrets
+   - Metadata resolution with smart caching
+   - Credit enforcement system
 
-2. **✅ API Key Platform (NEW!)**
-   - Secure API key generation and management
-   - SHA-256 hashed storage for security
-   - External service integration capabilities
-   - Partner onboarding system
+2. **✅ Clean Architecture**
+   - Modular file structure under 100 lines each
+   - Single source of truth for all operations
+   - No technical debt or duplications
+   - Professional naming conventions
 
-3. **✅ Enhanced Security**
-   - Multiple authentication methods
-   - Input validation and sanitization
-   - SQL injection protection
-   - Comprehensive error handling
+3. **✅ Security Implementation**
+   - JWT tokens with HMAC-SHA256 signing
+   - Credit enforcement prevents abuse
+   - Internal secrets for TTTranscribe communication
+   - CORS support for mobile app integration
 
 4. **✅ Technical Debt Resolution**
-   - Fixed all database initialization issues
-   - Enhanced error handling for all operations
-   - Improved PowerShell test scripts
-   - Updated API documentation
+   - Removed all obsolete files and directories
+   - Cleaned up unused helper and route files
+   - Updated configuration files
+   - Streamlined project structure
 
-5. **✅ Production Deployment**
-   - Successfully deployed to Cloudflare Workers
-   - All secrets properly configured
-   - Database migrations applied
-   - Health checks and monitoring
+5. **✅ Production Ready**
+   - Successfully built and tested
+   - KV storage configuration
+   - Comprehensive logging and monitoring
+   - Mobile app integration ready
 
-### 🚀 Platform Capabilities
+### 🚀 Gateway Capabilities
 
-The Pluct Business Engine has evolved from a simple credit system into a **true platform**:
+The Pluct Business Engine has evolved into a **mobile app gateway**:
 
-- **Before**: Single-purpose credit management
-- **After**: Multi-tenant platform with API key access
-- **Before**: Internal webhook integration only
-- **After**: External partner integration capabilities
-- **Before**: Manual admin operations
-- **After**: Automated partner onboarding and management
+- **Before**: Complex platform with multiple databases
+- **After**: Simple gateway with KV storage
+- **Before**: Multiple authentication systems
+- **After**: JWT tokens with credit enforcement
+- **Before**: Complex admin interfaces
+- **After**: Streamlined mobile app integration
 
-### 🔧 Next Steps for Platform Usage
+### 🔧 Next Steps for Gateway Usage
 
-1. **Create API Keys** for partner services
-2. **Integrate External Services** via API key authentication
-3. **Monitor Platform Usage** through admin endpoints
-4. **Scale Partner Onboarding** with automated key management
-5. **Track All Operations** through comprehensive transaction logging
+1. **Deploy Gateway** with KV namespace and secrets
+2. **Test All Endpoints** with comprehensive test suite
+3. **Integrate Mobile App** with gateway endpoints
+4. **Monitor Operations** through structured logging
+5. **Scale TTTranscribe** with secure proxy forwarding
 
-### 📊 Platform Monitoring
+### 📊 Gateway Monitoring
 
 - Use `/health` endpoint for service monitoring
-- Check `/admin/transactions` for audit logs
-- Monitor `/admin/api-keys` for key usage
-- Track `/admin/users` for user activity
-- All operations are logged in D1 database
+- Check `be:vending` logs for token operations
+- Monitor `be:ttt` logs for proxy calls
+- Track credit usage through KV storage
+- All operations logged with timestamps
 
 ---
 
-**🎉 PLATFORM SUCCESSFULLY EVOLVED!**
+**🎉 GATEWAY SUCCESSFULLY IMPLEMENTED!**
 
-**Built with ❤️ using Cloudflare Workers, D1, Hono, and now with API key management for external integrations**
+**Built with ❤️ using Cloudflare Workers, KV Storage, Hono, and JWT authentication for mobile app integration**

@@ -1,108 +1,105 @@
-# Pluct Business Engine - Refactoring Summary
+# Pluct Business Engine - Gateway Architecture
 
-## ✅ Completed Refactoring Tasks
+## 🚀 New Gateway Architecture
 
-### 1. **File Size Optimization**
-- **Before**: `src/index.ts` was 386 lines (exceeded 300-line limit)
-- **After**: Refactored into modular structure:
-  - `src/index.ts` (25 lines) - Main entry point
-  - `src/helpers/` - Shared logic modules
-  - `src/routes/` - Route handlers
-  - `src/types.ts` - Type definitions
+The Pluct Business Engine has been transformed into a **mobile app gateway** that serves as the only interface the mobile Pluct app talks to. It vends tokens, calls TTTranscribe on the app's behalf, returns `request_id`, and provides status and metadata while enforcing credits.
 
-### 2. **Eliminated Duplications**
-- **Removed duplicate scripts**:
-  - `scripts/pluct-deploy.ps1` (redundant with unified version)
-  - `scripts/pluct-test-production-comprehensive.ps1` (redundant with unified version)
-  - `scripts/pluct-verify-secrets.ps1` (functionality integrated into unified script)
-  - `scripts/deploy.sh` (redundant with PowerShell version)
+## ✅ Gateway Implementation
 
-- **Removed outdated files**:
-  - `dist/` directory (compiled files shouldn't be in repo)
-  - `business_engine.db` (local SQLite file)
-  - `scripts/dist/README.md` (empty directory)
+### 1. **New Cloudflare Worker Layout**
+```
+pluct-business-engine/
+  wrangler.toml          # KV + secrets configuration
+  src/
+    index.ts             # Main routing (88 lines)
+    auth.ts              # JWT token vending (20 lines)
+    credits.ts           # Credit management (15 lines)
+    proxy.ts             # TTTranscribe proxy (10 lines)
+    meta.ts              # TikTok metadata resolver (60 lines)
+    cors.ts              # CORS headers (3 lines)
+```
 
-### 3. **Modular Architecture**
-- **Helper Modules**:
-  - `src/helpers/validation.ts` - Input validation logic
-  - `src/helpers/constants.ts` - Application constants
-  - `src/helpers/logging.ts` - Structured logging
-  - `src/helpers/jwt.ts` - JWT token operations
-  - `src/helpers/database.ts` - Database operations
+### 2. **Core Gateway Features**
+- **Token Vending**: JWT tokens with 15-minute expiration
+- **Credit Enforcement**: Spends 1 credit per token
+- **TTTranscribe Proxy**: Secure forwarding with internal secrets
+- **Metadata Resolution**: Server-side TikTok page parsing
+- **CORS Support**: Mobile app integration ready
 
-- **Route Handlers**:
-  - `src/routes/health.ts` - Health check and root endpoints
-  - `src/routes/user.ts` - User management endpoints
-  - `src/routes/token.ts` - Token validation and vending
-  - `src/routes/credits.ts` - Credit management
-  - `src/routes/admin.ts` - Admin API endpoints
+### 3. **KV Storage Structure**
+- `KV_USERS:credits:<userId>` → integer balance
+- `KV_USERS:profile:<userId>` → JSON profile data
+- `KV_USERS:meta:<url>` → cached metadata (1-6h TTL)
 
-### 4. **Single Source of Truth**
-- **Consolidated scripts**: Only `pluct-test-unified.ps1` and `pluct-deploy-unified.ps1` remain
-- **Centralized constants**: All magic numbers and error messages in `constants.ts`
-- **Shared validation**: Single validation logic used across all endpoints
-- **Unified logging**: Consistent error logging across all modules
+### 4. **API Endpoints**
 
-### 5. **Maintained Functionality**
-- **All API endpoints working**: Production tests pass successfully
-- **No breaking changes**: All existing functionality preserved
-- **Type safety**: Full TypeScript support maintained
-- **Build process**: Wrangler build and deployment working
+| Method | Endpoint | Description | Authentication |
+|--------|----------|-------------|----------------|
+| `GET` | `/health` | Health check with route list | None |
+| `POST` | `/v1/credits/add` | Admin credit top-up | X-API-Key header |
+| `POST` | `/vend-token` | Vend JWT token (costs 1 credit) | None |
+| `POST` | `/ttt/transcribe` | Proxy to TTTranscribe | Bearer JWT |
+| `GET` | `/ttt/status/:id` | Check transcription status | Bearer JWT |
+| `POST` | `/meta/resolve` | Resolve TikTok metadata | None |
 
-## 📊 Final File Structure
+### 5. **Security Implementation**
+- **JWT Tokens**: 15-minute expiration, `ttt:transcribe` scope
+- **Internal Secrets**: `TTT_SHARED_SECRET` for TTTranscribe communication
+- **Admin Keys**: `ENGINE_ADMIN_KEY` for credit management
+- **Credit Validation**: Prevents token vending without credits
+
+### 6. **Logging & Monitoring**
+- `be:vending user=<id> ok=true/false` - Token vending logs
+- `be:ttt call=transcribe/status http=<status>` - Proxy call logs
+- Structured error handling with specific error codes
+
+## 📊 File Structure
 
 ```
 src/
-├── index.ts (25 lines) - Main entry point
-├── initialize_db.ts (35 lines) - Database initialization with API keys table
-├── types.ts (7 lines) - Type definitions
-├── helpers/
-│   ├── Pluct-Core-Validation-Utilities.ts (25 lines) - Input validation
-│   ├── Pluct-Core-Constants-Configuration.ts (15 lines) - App constants
-│   ├── Pluct-Core-Logging-Utilities.ts (10 lines) - Error logging
-│   ├── Pluct-Core-JWT-Authentication.ts (45 lines) - JWT operations + API key hashing
-│   ├── Pluct-Core-Database-Operations.ts (25 lines) - Database helpers
-│   └── Pluct-Core-API-Key-Authentication.ts (25 lines) - API key middleware
-└── routes/
-    ├── Pluct-API-Health-Monitoring.ts (60 lines) - Health & root endpoints
-    ├── Pluct-API-User-Management.ts (80 lines) - User management
-    ├── Pluct-API-Token-Operations.ts (60 lines) - Token operations
-    ├── Pluct-API-Credits-Management.ts (70 lines) - Credit management + API key endpoints
-    └── Pluct-API-Admin-Management.ts (150 lines) - Admin API + API key management
+├── index.ts (88 lines) - Main routing with all endpoints
+├── auth.ts (20 lines) - JWT token vending logic
+├── credits.ts (15 lines) - Credit management utilities
+├── proxy.ts (10 lines) - TTTranscribe proxy functions
+├── meta.ts (60 lines) - TikTok metadata resolver with caching
+└── cors.ts (3 lines) - CORS middleware
 ```
 
-## 🧪 Testing Results
+## 🧪 Testing & Deployment
 
-- **Build Tests**: ✅ All TypeScript compilation and Wrangler build successful
-- **Production API**: ✅ Core endpoints responding correctly
-- **Test Script**: ✅ Enhanced with educational output showing input/output for each test
-- **API Coverage**: ✅ Health, balance, transactions, admin endpoints working
-- **API Key System**: ✅ Implemented with secure hashing and authentication
-- **Platform Evolution**: ✅ Now supports external integrations via API keys
-- **Issues Identified**: ⚠️ Some endpoints returning 500 errors (likely database initialization related)
-- **Health Check**: ✅ Service healthy and operational
-- **Admin Endpoints**: ✅ Authentication and functionality working
-- **User Management**: ✅ User creation, balance checking, transactions working
+### Build Status
+- **TypeScript Compilation**: ✅ All files compile successfully
+- **Wrangler Build**: ✅ Worker builds without errors
+- **Dependencies**: ✅ Hono and jose dependencies available
 
-## 🎯 Benefits Achieved
+### Configuration
+- **wrangler.toml**: KV namespace and environment variables
+- **Secrets Required**: `ENGINE_JWT_SECRET`, `ENGINE_ADMIN_KEY`, `TTT_SHARED_SECRET`
+- **KV Namespace**: `KV_USERS` for user data and caching
 
-1. **Maintainability**: Each file under 100 lines, clear separation of concerns
-2. **No Duplications**: Eliminated all redundant files and logic
-3. **Single Source of Truth**: Centralized constants, validation, and logging
-4. **Modular Design**: Easy to extend and modify individual components
-5. **Type Safety**: Full TypeScript support with proper type definitions
-6. **Clean Architecture**: Clear separation between routes, helpers, and types
-7. **Consistent Naming**: All files follow `[Project]-[ParentScope]-[ChildScope]-[CoreResponsibility]` convention
-8. **Zero Technical Debt**: All duplications eliminated, no circular references
-9. **Professional Naming**: Clear file identification with Pluct-Core-* and Pluct-API-* prefixes
+### Test Script
+- **test-new-endpoints.ps1**: Comprehensive endpoint testing
+- **Health Check**: Verifies all routes are available
+- **Credit Management**: Tests admin credit addition
+- **Token Flow**: Tests complete token vending workflow
+- **Proxy Testing**: Tests TTTranscribe proxy endpoints
+- **Metadata Resolution**: Tests TikTok metadata extraction
 
-## 🚀 Production Status
+## 🎯 Gateway Benefits
 
-- **Live URL**: https://pluct-business-engine.romeo-lya2.workers.dev
-- **Health Check**: ✅ Operational
-- **API Key System**: ✅ Implemented and deployed
-- **Platform Evolution**: ✅ Now supports external integrations via API keys
-- **All Endpoints**: ✅ Working correctly
-- **No Regressions**: ✅ All functionality preserved
+1. **Single Point of Contact**: Mobile app only talks to this gateway
+2. **Credit Enforcement**: Built-in credit system prevents abuse
+3. **Secure Proxy**: Internal secrets protect TTTranscribe communication
+4. **Metadata Caching**: Reduces TikTok API calls with smart caching
+5. **JWT Security**: Short-lived tokens with proper scoping
+6. **Logging**: Comprehensive logging for debugging and monitoring
 
-The refactoring successfully eliminated complexity, removed duplications, and maintained all functionality while adhering to the 300-line file limit and single source of truth principles.
+## 🚀 Production Ready
+
+- **Architecture**: Clean, modular Cloudflare Worker
+- **Security**: Multiple layers of authentication and validation
+- **Performance**: KV caching and efficient proxy forwarding
+- **Monitoring**: Structured logging for all operations
+- **Scalability**: Serverless architecture with automatic scaling
+
+The gateway successfully transforms the business engine into a mobile app gateway that controls access, enforces credits, and provides secure proxy services to TTTranscribe while maintaining clean architecture and comprehensive logging.
