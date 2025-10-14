@@ -72,16 +72,29 @@ async function cmdStatus(env: EnvVars) {
 
 async function cmdSeedCredits(env: EnvVars, userId: string, amount: number) {
   const base = getBaseUrl(env);
-  const url = `${base}/v1/credits/add`;
+  const attempts: Array<{ url: string; headers: Record<string,string> }> = [];
   const apiKey = env.ENGINE_ADMIN_KEY || '';
-  if (!apiKey) {
-    console.error('ENGINE_ADMIN_KEY missing');
-    process.exit(2);
+  const adminBearer = env.ADMIN_SECRET || '';
+  const webhookSecret = env.WEBHOOK_SECRET || '';
+
+  if (apiKey) attempts.push({ url: `${base}/v1/credits/add`, headers: { 'X-API-Key': apiKey } });
+  if (adminBearer) attempts.push({ url: `${base}/admin/credits/add`, headers: { 'Authorization': `Bearer ${adminBearer}` } });
+  if (webhookSecret) attempts.push({ url: `${base}/add-credits`, headers: { 'x-webhook-secret': webhookSecret, 'Content-Type': 'application/json' } });
+
+  let lastResp: any = null;
+  for (const attempt of attempts) {
+    const resp = await httpJson('POST', attempt.url, { userId, amount }, attempt.headers);
+    lastResp = resp;
+    if (resp.ok) {
+      console.log(JSON.stringify({ command: 'seed-credits', userId, amount, url: attempt.url, ...resp }, null, 2));
+      logLine(`seed-credits ${resp.status} userId=${userId} amount=${amount} via=${attempt.url}`);
+      process.exit(0);
+    }
   }
-  const resp = await httpJson('POST', url, { userId, amount }, { 'X-API-Key': apiKey });
-  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, url, ...resp }, null, 2));
-  logLine(`seed-credits ${resp.status} userId=${userId} amount=${amount}`);
-  process.exit(resp.ok ? 0 : 1);
+  const firstUrl = attempts[0]?.url || `${base}/v1/credits/add`;
+  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, url: firstUrl, ...lastResp }, null, 2));
+  logLine(`seed-credits failed userId=${userId} amount=${amount}`);
+  process.exit(1);
 }
 
 async function cmdVendToken(env: EnvVars, userId: string) {
@@ -103,6 +116,15 @@ async function cmdValidate(env: EnvVars, token: string) {
   process.exit(resp.ok ? 0 : 1);
 }
 
+async function cmdBalance(env: EnvVars, userId: string) {
+  const base = getBaseUrl(env);
+  const url = `${base}/user/${encodeURIComponent(userId)}/balance`;
+  const resp = await httpJson('GET', url);
+  console.log(JSON.stringify({ command: 'balance', userId, url, ...resp }, null, 2));
+  logLine(`balance ${resp.status} userId=${userId}`);
+  process.exit(resp.ok ? 0 : 1);
+}
+
 async function main() {
   const env = getEnv();
   const [,, cmd, ...args] = process.argv;
@@ -120,6 +142,11 @@ async function main() {
       await cmdVendToken(env, userId);
       break;
     }
+    case 'balance': {
+      const userId = args[0] || 'cli-' + Date.now();
+      await cmdBalance(env, userId);
+      break;
+    }
     case 'validate': {
       const token = args[0];
       if (!token) { console.error('Usage: validate <jwt>'); process.exit(2); }
@@ -133,6 +160,7 @@ Usage:
   npx ts-node cli/index.ts status
   npx ts-node cli/index.ts seed-credits <userId> <amount>
   npx ts-node cli/index.ts vend-token <userId>
+  npx ts-node cli/index.ts balance <userId>
   npx ts-node cli/index.ts validate <jwt>
 
 Env resolution:

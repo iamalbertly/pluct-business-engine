@@ -19,15 +19,17 @@
 		"preview": "wrangler dev --remote",
 		"lint": "echo 'Linting skipped - no ESLint configured'",
 		"lint:fix": "echo 'Linting skipped - no ESLint configured'",
-		"cli": "ts-node cli/index.ts",
-		"cli:status": "ts-node cli/index.ts status",
-		"cli:seed": "ts-node cli/index.ts seed-credits",
-		"cli:vend": "ts-node cli/index.ts vend-token"
+		"cli": "tsx cli/index.ts",
+		"cli:status": "tsx cli/index.ts status",
+		"cli:seed": "tsx cli/index.ts seed-credits",
+		"cli:vend": "tsx cli/index.ts vend-token",
+		"cli:balance": "tsx cli/index.ts balance"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
 		"@types/node": "^24.7.1",
 		"ts-node": "^10.9.2",
+		"tsx": "^4.19.2",
 		"typescript": "^5.5.2",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.42.2"

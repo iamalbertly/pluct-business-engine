@@ -103,3 +103,29 @@ src/
 - **Scalability**: Serverless architecture with automatic scaling
 
 The gateway successfully transforms the business engine into a mobile app gateway that controls access, enforces credits, and provides secure proxy services to TTTranscribe while maintaining clean architecture and comprehensive logging.
+
+## 🔧 Local CLI (Single Source of Truth)
+
+- Location: `cli/index.ts` (TypeScript, executed via `tsx`)
+- Env sourcing: reads `.dev.vars` at repo root; supports `BASE_URL` override
+- Commands:
+  - `status` → calls `/health`
+  - `seed-credits <userId> <amount>` → tries in order:
+    - `POST /v1/credits/add` with `X-API-Key: ENGINE_ADMIN_KEY`
+    - `POST /admin/credits/add` with `Authorization: Bearer ADMIN_SECRET`
+    - `POST /add-credits` with `x-webhook-secret: WEBHOOK_SECRET`
+  - `vend-token <userId>` → `POST /vend-token`
+  - `balance <userId>` → `GET /user/:userId/balance`
+  - `validate <jwt>` → `GET /ttt/status/ping` with `Authorization: Bearer`
+- Logging: appends to `logs/cli.log` with timestamps
+
+### Dependency Map (concise)
+- CLI → Worker endpoints: `/health`, `/v1/credits/add`, `/admin/credits/add`, `/add-credits`, `/vend-token`, `/user/:id/balance`, `/ttt/status/:id`
+- Secrets used (from `.dev.vars`): `ENGINE_ADMIN_KEY`, `ADMIN_SECRET`, `WEBHOOK_SECRET`, optional `BASE_URL`
+- Shares single source of truth with existing PowerShell scripts for endpoints and secrets
+
+### Current Observations (2025-10-14)
+- Status: OK (200)
+- Seed via `X-API-Key`: 500 on `/v1/credits/add`; alternative paths attempted
+- Balance: OK and reflects seeded value
+- Vend token: 500 from production; needs server-side review despite sufficient credits
