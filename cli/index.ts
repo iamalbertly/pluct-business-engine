@@ -35,6 +35,14 @@ function getBaseUrl(env: EnvVars): string {
   return (env.BASE_URL as string) || 'https://pluct-business-engine.romeo-lya2.workers.dev';
 }
 
+function detectAuth(env: EnvVars) {
+  return {
+    apiKey: env.ENGINE_ADMIN_KEY || '',
+    adminBearer: env.ADMIN_SECRET || env.ADMIN_TOKEN || env.ENGINE_ADMIN_KEY || '',
+    webhookSecret: env.WEBHOOK_SECRET || '',
+  };
+}
+
 function nowTs(): string {
   return new Date().toISOString();
 }
@@ -47,30 +55,37 @@ function logLine(message: string) {
 }
 
 async function httpJson(method: string, url: string, body?: unknown, headers?: Record<string, string>) {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      'content-type': 'application/json',
-      ...(headers || {})
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  } as RequestInit);
-  const text = await res.text();
-  let json: any = undefined;
-  try { json = text ? JSON.parse(text) : undefined; } catch {}
-  return { status: res.status, ok: res.ok, json, text };
+  const reqHeaders = { 'content-type': 'application/json', ...(headers || {}) } as Record<string,string>;
+  const reqBody = body ? JSON.stringify(body) : undefined;
+  const requestInfo = { method, url, headers: reqHeaders, body: reqBody };
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(url, { method, headers: reqHeaders, body: reqBody } as RequestInit);
+    const text = await res.text();
+    let json: any = undefined;
+    try { json = text ? JSON.parse(text) : undefined; } catch {}
+    const respHeaders = Object.fromEntries(Array.from(res.headers.entries()));
+    const responseInfo = { status: res.status, ok: res.ok, headers: respHeaders, text, json };
+    const durationMs = Date.now() - startedAt;
+    return { request: requestInfo, response: responseInfo, durationMs };
+  } catch (err: any) {
+    const durationMs = Date.now() - startedAt;
+    const errorInfo = { message: String(err?.message || err), code: err?.code, stack: err?.stack };
+    const responseInfo = { status: 0, ok: false, headers: {}, text: '', json: undefined, error: errorInfo } as any;
+    return { request: requestInfo, response: responseInfo, durationMs };
+  }
 }
 
-async function cmdStatus(env: EnvVars) {
+async function cmdStatus(env: EnvVars, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const url = `${base}/health`;
-  const resp = await httpJson('GET', url);
-  console.log(JSON.stringify({ command: 'status', url, ...resp }, null, 2));
-  logLine(`status ${resp.status} url=${url}`);
-  process.exit(resp.ok ? 0 : 1);
+  const { request, response, durationMs } = await httpJson('GET', url);
+  console.log(JSON.stringify({ command: 'status', request, response, durationMs }, null, 2));
+  logLine(`status ${response.status} url=${url}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
-async function cmdSeedCredits(env: EnvVars, userId: string, amount: number) {
+async function cmdSeedCredits(env: EnvVars, userId: string, amount: number, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const attempts: Array<{ url: string; headers: Record<string,string> }> = [];
   const apiKey = env.ENGINE_ADMIN_KEY || '';
@@ -83,51 +98,271 @@ async function cmdSeedCredits(env: EnvVars, userId: string, amount: number) {
 
   let lastResp: any = null;
   for (const attempt of attempts) {
-    const resp = await httpJson('POST', attempt.url, { userId, amount }, attempt.headers);
-    lastResp = resp;
-    if (resp.ok) {
-      console.log(JSON.stringify({ command: 'seed-credits', userId, amount, url: attempt.url, ...resp }, null, 2));
-      logLine(`seed-credits ${resp.status} userId=${userId} amount=${amount} via=${attempt.url}`);
-      process.exit(0);
+    const { request, response, durationMs } = await httpJson('POST', attempt.url, { userId, amount }, attempt.headers);
+    lastResp = { request, response, durationMs };
+    if (response.ok) {
+      console.log(JSON.stringify({ command: 'seed-credits', userId, amount, request, response, durationMs }, null, 2));
+      logLine(`seed-credits ${response.status} userId=${userId} amount=${amount} via=${attempt.url}`);
+      if (exitOnComplete) process.exit(0);
+      return;
     }
   }
-  const firstUrl = attempts[0]?.url || `${base}/v1/credits/add`;
-  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, url: firstUrl, ...lastResp }, null, 2));
+  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, ...lastResp }, null, 2));
   logLine(`seed-credits failed userId=${userId} amount=${amount}`);
-  process.exit(1);
+  if (exitOnComplete) process.exit(1);
 }
 
-async function cmdVendToken(env: EnvVars, userId: string) {
+async function cmdVendToken(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const url = `${base}/vend-token`;
-  const resp = await httpJson('POST', url, { userId });
-  console.log(JSON.stringify({ command: 'vend-token', userId, url, ...resp }, null, 2));
-  logLine(`vend-token ${resp.status} userId=${userId}`);
-  process.exit(resp.ok ? 0 : 1);
+  const { request, response, durationMs } = await httpJson('POST', url, { userId });
+  console.log(JSON.stringify({ command: 'vend-token', request, response, userId, durationMs }, null, 2));
+  logLine(`vend-token ${response.status} userId=${userId}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
-async function cmdValidate(env: EnvVars, token: string) {
+async function cmdValidate(env: EnvVars, token: string, exitOnComplete: boolean = true) {
   // There is no public validate endpoint in simplified gateway; perform a protected TTT call to implicitly validate
   const base = getBaseUrl(env);
   const url = `${base}/ttt/status/ping`;
-  const resp = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
-  console.log(JSON.stringify({ command: 'validate', url, statusOnly: resp.status, ok: resp.ok }, null, 2));
-  logLine(`validate ${resp.status}`);
-  process.exit(resp.ok ? 0 : 1);
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
+  console.log(JSON.stringify({ command: 'validate', request, response, durationMs }, null, 2));
+  logLine(`validate ${response.status}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
-async function cmdBalance(env: EnvVars, userId: string) {
+async function cmdBalance(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const url = `${base}/user/${encodeURIComponent(userId)}/balance`;
-  const resp = await httpJson('GET', url);
-  console.log(JSON.stringify({ command: 'balance', userId, url, ...resp }, null, 2));
-  logLine(`balance ${resp.status} userId=${userId}`);
-  process.exit(resp.ok ? 0 : 1);
+  const { request, response, durationMs } = await httpJson('GET', url);
+  console.log(JSON.stringify({ command: 'balance', userId, request, response, durationMs }, null, 2));
+  logLine(`balance ${response.status} userId=${userId}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdAddUser(env: EnvVars, userId: string, initialCredits: number, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/user/create`;
+  const { request, response, durationMs } = await httpJson('POST', url, { userId, initialCredits });
+  console.log(JSON.stringify({ command: 'add-user', request, response, durationMs }, null, 2));
+  logLine(`add-user ${response.status} userId=${userId} credits=${initialCredits}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdAdminListUsers(env: EnvVars, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/admin/users`;
+  const adminBearer = detectAuth(env).adminBearer || '';
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {});
+  console.log(JSON.stringify({ command: 'admin-list-users', request, response, durationMs }, null, 2));
+  logLine(`admin-list-users ${response.status}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdAdminListTransactions(env: EnvVars, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/admin/transactions`;
+  const adminBearer = detectAuth(env).adminBearer || '';
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {});
+  console.log(JSON.stringify({ command: 'admin-list-transactions', request, response, durationMs }, null, 2));
+  logLine(`admin-list-transactions ${response.status}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdAdminApiKeys(env: EnvVars, action: string, arg?: string, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const adminBearer = detectAuth(env).adminBearer || '';
+  const auth = adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {};
+  if (action === 'list') {
+    const url = `${base}/admin/api-keys`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, auth);
+    console.log(JSON.stringify({ command: 'admin-api-keys', action, request, response, durationMs }, null, 2));
+    logLine(`admin-api-keys:list ${response.status}`);
+    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+    return;
+  } else if (action === 'create') {
+    const url = `${base}/admin/api-keys/create`;
+    const name = arg || `cli-key-${Date.now()}`;
+    const { request, response, durationMs } = await httpJson('POST', url, { name }, auth);
+    console.log(JSON.stringify({ command: 'admin-api-keys', action, name, request, response, durationMs }, null, 2));
+    logLine(`admin-api-keys:create ${response.status} name=${name}`);
+    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+    return;
+  } else if (action === 'revoke') {
+    const id = arg;
+    if (!id) { console.error('Usage: admin:api-keys revoke <id>'); process.exit(2); }
+    const url = `${base}/admin/api-keys/${encodeURIComponent(id)}/revoke`;
+    const { request, response, durationMs } = await httpJson('POST', url, {}, auth);
+    console.log(JSON.stringify({ command: 'admin-api-keys', action, id, request, response, durationMs }, null, 2));
+    logLine(`admin-api-keys:revoke ${response.status} id=${id}`);
+    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+    return;
+  } else {
+    console.error('Usage: admin:api-keys <list|create [name]|revoke <id>>');
+    process.exit(2);
+  }
+}
+
+async function cmdUserTransactions(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/user/${encodeURIComponent(userId)}/transactions`;
+  const { request, response, durationMs } = await httpJson('GET', url);
+  console.log(JSON.stringify({ command: 'user-transactions', userId, request, response, durationMs }, null, 2));
+  logLine(`user-transactions ${response.status} userId=${userId}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdTttTranscribe(env: EnvVars, token: string, payloadJson: string, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/ttt/transcribe`;
+  let payload: any = undefined;
+  try { payload = payloadJson ? JSON.parse(payloadJson) : {}; } catch { payload = {}; }
+  const { request, response, durationMs } = await httpJson('POST', url, payload, { 'Authorization': `Bearer ${token}` });
+  console.log(JSON.stringify({ command: 'ttt-transcribe', request, response, durationMs }, null, 2));
+  logLine(`ttt-transcribe ${response.status}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+async function cmdTttStatus(env: EnvVars, token: string, id: string, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/ttt/status/${encodeURIComponent(id)}`;
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
+  console.log(JSON.stringify({ command: 'ttt-status', request, response, durationMs }, null, 2));
+  logLine(`ttt-status ${response.status} id=${id}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+// Interactive USSD-style menu
+async function runInteractiveMenu(env: EnvVars) {
+  const rl = await import('readline');
+  const reader = rl.createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = (q: string) => new Promise<string>(resolve => reader.question(q, resolve));
+
+  async function showHeader() {
+    const base = getBaseUrl(env);
+    const auth = detectAuth(env);
+    console.log('\nPluct CLI – Interactive Menu');
+    console.log('============================');
+    console.log(`Base URL: ${base}`);
+    console.log(`Auth: X-API-Key=${auth.apiKey ? 'yes' : 'no'}, AdminBearer=${auth.adminBearer ? 'yes' : 'no'}, WebhookSecret=${auth.webhookSecret ? 'yes' : 'no'}`);
+  }
+
+  async function usersMenu() {
+    console.log('\n1) Users');
+    console.log('  1. Create user');
+    console.log('  2. Show balance');
+    console.log('  3. Add credits');
+    console.log('  4. List all users');
+    console.log('  5. User transactions');
+    console.log('  0. Back');
+    const choice = (await ask('Choose: ')).trim();
+    if (choice === '1') {
+      const userId = (await ask('User ID: ')).trim();
+      const credits = Number((await ask('Initial credits (0): ')).trim() || '0');
+      await cmdAddUser(env, userId, credits, false);
+    } else if (choice === '2') {
+      const userId = (await ask('User ID: ')).trim();
+      await cmdBalance(env, userId, false);
+    } else if (choice === '3') {
+      const userId = (await ask('User ID: ')).trim();
+      const amount = Number((await ask('Amount: ')).trim());
+      await cmdSeedCredits(env, userId, amount, false);
+    } else if (choice === '4') {
+      await cmdAdminListUsers(env, false);
+    } else if (choice === '5') {
+      const userId = (await ask('User ID: ')).trim();
+      await cmdUserTransactions(env, userId, false);
+    }
+  }
+
+  async function tokensMenu() {
+    console.log('\n2) Tokens');
+    console.log('  1. Vend token');
+    console.log('  2. Validate token');
+    console.log('  3. TTT Transcribe (requires JWT)');
+    console.log('  4. TTT Status (requires JWT)');
+    console.log('  0. Back');
+    const choice = (await ask('Choose: ')).trim();
+    if (choice === '1') {
+      const userId = (await ask('User ID: ')).trim();
+      await cmdVendToken(env, userId, false);
+    } else if (choice === '2') {
+      const token = (await ask('JWT: ')).trim();
+      await cmdValidate(env, token, false);
+    } else if (choice === '3') {
+      const token = (await ask('JWT: ')).trim();
+      const payload = (await ask('Transcribe JSON payload ({}): ')).trim() || '{}';
+      await cmdTttTranscribe(env, token, payload, false);
+    } else if (choice === '4') {
+      const token = (await ask('JWT: ')).trim();
+      const id = (await ask('Request ID: ')).trim();
+      await cmdTttStatus(env, token, id, false);
+    }
+  }
+
+  async function adminMenu() {
+    console.log('\n3) Admin');
+    console.log('  1. List users');
+    console.log('  2. List transactions');
+    console.log('  0. Back');
+    const choice = (await ask('Choose: ')).trim();
+    if (choice === '1') {
+      await cmdAdminListUsers(env);
+    } else if (choice === '2') {
+      await cmdAdminListTransactions(env);
+    }
+  }
+
+  async function apiKeysMenu() {
+    console.log('\n4) API Keys');
+    console.log('  1. List keys');
+    console.log('  2. Create key');
+    console.log('  3. Revoke key');
+    console.log('  0. Back');
+    const choice = (await ask('Choose: ')).trim();
+    if (choice === '1') {
+      await cmdAdminApiKeys(env, 'list');
+    } else if (choice === '2') {
+      const name = (await ask('Name (auto if empty): ')).trim();
+      await cmdAdminApiKeys(env, 'create', name || undefined);
+    } else if (choice === '3') {
+      const id = (await ask('Key ID: ')).trim();
+      await cmdAdminApiKeys(env, 'revoke', id);
+    }
+  }
+
+  while (true) {
+    await showHeader();
+    console.log('\nMain Menu');
+    console.log('  1. Users');
+    console.log('  2. Tokens');
+    console.log('  3. Admin');
+    console.log('  4. API Keys');
+    console.log('  5. Status');
+    console.log('  0. Exit');
+    const choice = (await ask('Choose: ')).trim();
+    try {
+      if (choice === '1') await usersMenu();
+      else if (choice === '2') await tokensMenu();
+      else if (choice === '3') await adminMenu();
+      else if (choice === '4') await apiKeysMenu();
+      else if (choice === '5') await cmdStatus(env, false);
+      else if (choice === '0') { reader.close(); break; }
+      else console.log('Invalid choice');
+    } catch (err) {
+      console.error('Error:', err);
+    }
+  }
 }
 
 async function main() {
   const env = getEnv();
   const [,, cmd, ...args] = process.argv;
+  if (!cmd || cmd === 'menu') {
+    await runInteractiveMenu(env);
+    return;
+  }
   switch (cmd) {
     case 'status':
       await cmdStatus(env); break;
@@ -135,6 +370,12 @@ async function main() {
       const userId = args[0] || 'cli-' + Date.now();
       const amount = Number(args[1] ?? '10');
       await cmdSeedCredits(env, userId, amount);
+      break;
+    }
+    case 'add-user': {
+      const userId = args[0] || 'cli-' + Date.now();
+      const initialCredits = Number(args[1] ?? '0');
+      await cmdAddUser(env, userId, initialCredits);
       break;
     }
     case 'vend-token': {
@@ -147,10 +388,26 @@ async function main() {
       await cmdBalance(env, userId);
       break;
     }
+    case 'tokens': {
+      const userId = args[0] || 'cli-' + Date.now();
+      await cmdBalance(env, userId);
+      break;
+    }
     case 'validate': {
       const token = args[0];
       if (!token) { console.error('Usage: validate <jwt>'); process.exit(2); }
       await cmdValidate(env, token);
+      break;
+    }
+    case 'admin:list-users':
+      await cmdAdminListUsers(env); break;
+    case 'admin:list-transactions':
+      await cmdAdminListTransactions(env); break;
+    case 'admin:api-keys': {
+      const action = args[0];
+      const extra = args[1];
+      if (!action) { console.error('Usage: admin:api-keys <list|create [name]|revoke <id>>'); process.exit(2); }
+      await cmdAdminApiKeys(env, action, extra);
       break;
     }
     case 'help':
@@ -159,9 +416,14 @@ async function main() {
 Usage:
   npx ts-node cli/index.ts status
   npx ts-node cli/index.ts seed-credits <userId> <amount>
+  npx ts-node cli/index.ts add-user <userId> <initialCredits>
   npx ts-node cli/index.ts vend-token <userId>
   npx ts-node cli/index.ts balance <userId>
+  npx ts-node cli/index.ts tokens <userId>
   npx ts-node cli/index.ts validate <jwt>
+  npx ts-node cli/index.ts admin:list-users
+  npx ts-node cli/index.ts admin:list-transactions
+  npx ts-node cli/index.ts admin:api-keys <list|create [name]|revoke <id>>
 
 Env resolution:
   Reads .dev.vars at repo root; supports BASE_URL override.

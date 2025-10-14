@@ -23,7 +23,8 @@
 		"cli:status": "tsx cli/index.ts status",
 		"cli:seed": "tsx cli/index.ts seed-credits",
 		"cli:vend": "tsx cli/index.ts vend-token",
-		"cli:balance": "tsx cli/index.ts balance"
+		"cli:balance": "tsx cli/index.ts balance",
+		"cli:menu": "tsx cli/index.ts menu"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
