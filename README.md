@@ -87,6 +87,37 @@ pluct-business-engine/
 | `GET` | `/ttt/status/:id` | Check transcription status | Bearer JWT |
 | `POST` | `/meta/resolve` | Resolve TikTok metadata | None |
 
+## 🧾 Error Responses (Development)
+
+During development, the gateway returns structured error responses to remove guesswork and speed up troubleshooting.
+
+- Missing user ID when vending token:
+```json
+{ "ok": false, "code": "missing_user_id", "message": "User ID is required", "details": {} }
+```
+
+- Insufficient credits (distinguishes missing user vs zero credits):
+```json
+{ "ok": false, "code": "insufficient_credits", "message": "Insufficient credits for token vending", "details": { "userId": "mobile", "credits": 0, "reason": "user_not_found_or_no_credits" } }
+```
+
+- Rate limit exceeded:
+```json
+{ "ok": false, "code": "rate_limit_exceeded", "message": "Rate limit exceeded. Please try again later.", "details": { "userId": "mobile" } }
+```
+
+- Missing Authorization header on protected routes:
+```json
+{ "ok": false, "code": "missing_auth", "message": "Authorization header required", "details": {} }
+```
+
+- Admin credits: invalid request body
+```json
+{ "ok": false, "code": "invalid_request", "message": "userId and numeric amount are required", "details": { "userId": "mobile", "amount": null } }
+```
+
+- Generic failures include an error message in `details.error`.
+
 ## 🔧 Setup and Development
 
 ### Prerequisites

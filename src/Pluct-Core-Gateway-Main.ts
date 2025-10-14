@@ -22,6 +22,10 @@ function log(stage: string, message: string, metadata?: any) {
   console.log(`be:${stage} msg=${message}${metadata ? ` metadata=${JSON.stringify(metadata)}` : ''}`);
 }
 
+function jsonError(c: any, status: number, code: string, message: string, details?: Record<string, any>) {
+  return c.json({ ok: false, code, message, details: details || {} }, status);
+}
+
 async function checkRateLimit(env: Env, key: string): Promise<boolean> {
   try {
     const rateLimitKey = `rate_limit:${key}`;
@@ -85,7 +89,7 @@ class PluctGateway {
           diagnostics: { kv: 'healthy', responseTime: Date.now() }
         });
       } catch (error) {
-        return c.json({ ok: false, error: 'health_check_failed' }, 500);
+        return jsonError(c, 500, 'health_check_failed', 'Health check failed');
       }
     });
     
@@ -93,13 +97,18 @@ class PluctGateway {
     this.app.post('/vend-token', async c => {
       try {
         const { userId } = await c.req.json();
-        if (!userId) return c.json({ error: 'missing_user_id' }, 400);
+        if (!userId) return jsonError(c, 400, 'missing_user_id', 'User ID is required');
         
         const rateLimitAllowed = await checkRateLimit(c.env, `token_vend:${userId}`);
-        if (!rateLimitAllowed) return c.json({ error: 'rate_limit_exceeded' }, 429);
+        if (!rateLimitAllowed) return jsonError(c, 429, 'rate_limit_exceeded', 'Rate limit exceeded. Please try again later.', { userId });
         
-        const credits = await this.getCredits(c.env, userId);
-        if (credits <= 0) return c.json({ error: 'insufficient_credits' }, 403);
+        // Distinguish missing user vs zero credits
+        const raw = await c.env.KV_USERS.get(`credits:${userId}`);
+        const credits = raw === null ? 0 : parseInt(raw || '0', 10);
+        if (credits <= 0) {
+          const reason = raw === null ? 'user_not_found_or_no_credits' : 'no_credits';
+          return jsonError(c, 403, 'insufficient_credits', 'Insufficient credits for token vending', { userId, credits, reason });
+        }
         
         await this.spendCredit(c.env, userId);
         const token = await this.generateToken(c.env, userId);
@@ -108,7 +117,7 @@ class PluctGateway {
         return c.json({ token, expires_in: 900, user_id: userId });
       } catch (error) {
         log('token_vending', 'token vending failed', { error: (error as Error).message });
-        return c.json({ error: 'token_generation_failed' }, 500);
+        return jsonError(c, 500, 'token_generation_failed', 'Token generation failed', { error: (error as Error).message });
       }
     });
     
@@ -116,7 +125,7 @@ class PluctGateway {
     this.app.post('/ttt/transcribe', async c => {
       try {
         const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) return c.json({ error: 'unauthorized' }, 401);
+        if (!auth?.startsWith('Bearer ')) return jsonError(c, 401, 'missing_auth', 'Authorization header required');
         
         const token = auth.slice(7);
         const payload = await this.verifyToken(c.env, token);
@@ -132,7 +141,7 @@ class PluctGateway {
         return new Response(response.body, { status: response.status, headers: response.headers });
       } catch (error) {
         log('ttt_proxy', 'transcribe request failed', { error: (error as Error).message });
-        return c.json({ error: 'proxy_failed' }, 500);
+        return jsonError(c, 500, 'proxy_failed', 'TTTranscribe proxy call failed', { error: (error as Error).message });
       }
     });
     
@@ -140,7 +149,7 @@ class PluctGateway {
     this.app.get('/ttt/status/:id', async c => {
       try {
         const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) return c.json({ error: 'unauthorized' }, 401);
+        if (!auth?.startsWith('Bearer ')) return jsonError(c, 401, 'missing_auth', 'Authorization header required');
         
         const token = auth.slice(7);
         await this.verifyToken(c.env, token);
@@ -152,7 +161,7 @@ class PluctGateway {
         return new Response(response.body, { status: response.status, headers: response.headers });
       } catch (error) {
         log('ttt_proxy', 'status check failed', { error: (error as Error).message });
-        return c.json({ error: 'status_check_failed' }, 500);
+        return jsonError(c, 500, 'status_check_failed', 'TTTranscribe status check failed', { error: (error as Error).message });
       }
     });
     
@@ -160,13 +169,13 @@ class PluctGateway {
     this.app.post('/meta/resolve', async c => {
       try {
         const { url } = await c.req.json();
-        if (!url) return c.json({ error: 'missing_url' }, 400);
+        if (!url) return jsonError(c, 400, 'missing_url', 'URL is required');
         
         const meta = await this.resolveMetadata(c.env, url);
         return c.json(meta);
       } catch (error) {
         log('meta_resolve', 'metadata resolution failed', { error: (error as Error).message });
-        return c.json({ error: 'metadata_resolution_failed' }, 500);
+        return jsonError(c, 500, 'metadata_resolution_failed', 'Metadata resolution failed', { error: (error as Error).message });
       }
     });
     
@@ -174,16 +183,19 @@ class PluctGateway {
     this.app.post('/v1/credits/add', async c => {
       try {
         const apiKey = c.req.header('X-API-Key');
-        if (apiKey !== c.env.ENGINE_ADMIN_KEY) return c.json({ error: 'unauthorized' }, 401);
+        if (apiKey !== c.env.ENGINE_ADMIN_KEY) return jsonError(c, 401, 'unauthorized', 'Invalid admin API key');
         
         const { userId, amount } = await c.req.json();
+        if (!userId || typeof amount !== 'number') {
+          return jsonError(c, 400, 'invalid_request', 'userId and numeric amount are required', { userId, amount });
+        }
         await this.addCredits(c.env, userId, amount);
         
         log('credits', 'credits added', { userId, amount });
-        return c.json({ ok: true });
+        return c.json({ ok: true, userId, amount });
       } catch (error) {
         log('credits', 'credit addition failed', { error: (error as Error).message });
-        return c.json({ error: 'credit_addition_failed' }, 500);
+        return jsonError(c, 500, 'credits_add_failed', 'Failed to add credits', { error: (error as Error).message });
       }
     });
   }
