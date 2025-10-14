@@ -93,6 +93,15 @@ async function cmdStatus(env: EnvVars, exitOnComplete: boolean = true) {
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
+async function cmdServiceHealth(env: EnvVars, exitOnComplete: boolean = true) {
+  const base = getBaseUrl(env);
+  const url = `${base}/health/services`;
+  const { request, response, durationMs } = await httpJson('GET', url);
+  console.log(JSON.stringify({ command: 'service-health', request, response, durationMs }, null, 2));
+  logLine(`service-health ${response.status} url=${url}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
 async function cmdSeedCredits(env: EnvVars, userId: string, amount: number, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const attempts: Array<{ url: string; headers: Record<string,string> }> = [];
@@ -253,6 +262,27 @@ async function runInteractiveMenu(env: EnvVars) {
     console.log(`Auth: X-API-Key=${auth.apiKey ? 'yes' : 'no'}, AdminBearer=${auth.adminBearer ? 'yes' : 'no'}, WebhookSecret=${auth.webhookSecret ? 'yes' : 'no'}`);
   }
 
+  async function monitoringMenu() {
+    console.log('\n5) Service Monitoring');
+    console.log('  1. Check service health');
+    console.log('  2. View service recommendations');
+    console.log('  3. Test TTT connectivity');
+    console.log('  0. Back');
+    const choice = (await ask('Choose: ')).trim();
+    if (choice === '1') {
+      await cmdServiceHealth(env, false);
+    } else if (choice === '2') {
+      await cmdServiceHealth(env, false);
+    } else if (choice === '3') {
+      const token = (await ask('JWT Token (optional): ')).trim();
+      if (token) {
+        await cmdTttTranscribe(env, token, '{"test": "connectivity"}', false);
+      } else {
+        console.log('Skipping TTT test - no token provided');
+      }
+    }
+  }
+
   async function usersMenu() {
     console.log('\n1) Users');
     console.log('  1. Create user');
@@ -344,7 +374,8 @@ async function runInteractiveMenu(env: EnvVars) {
     console.log('  2. Tokens');
     console.log('  3. Admin');
     console.log('  4. API Keys');
-    console.log('  5. Status');
+    console.log('  5. Service Monitoring');
+    console.log('  6. Status');
     console.log('  0. Exit');
     const choice = (await ask('Choose: ')).trim();
     try {
@@ -352,7 +383,8 @@ async function runInteractiveMenu(env: EnvVars) {
       else if (choice === '2') await tokensMenu();
       else if (choice === '3') await adminMenu();
       else if (choice === '4') await apiKeysMenu();
-      else if (choice === '5') await cmdStatus(env, false);
+      else if (choice === '5') await monitoringMenu();
+      else if (choice === '6') await cmdStatus(env, false);
       else if (choice === '0') { reader.close(); break; }
       else console.log('Invalid choice');
     } catch (err) {
@@ -371,6 +403,8 @@ async function main() {
   switch (cmd) {
     case 'status':
       await cmdStatus(env); break;
+    case 'service-health':
+      await cmdServiceHealth(env); break;
     case 'seed-credits': {
       const userId = args[0] || 'cli-' + Date.now();
       const amount = Number(args[1] ?? '10');
@@ -420,6 +454,7 @@ async function main() {
       console.log(`Pluct CLI
 Usage:
   npx ts-node cli/index.ts status
+  npx ts-node cli/index.ts service-health
   npx ts-node cli/index.ts seed-credits <userId> <amount>
   npx ts-node cli/index.ts add-user <userId> <initialCredits>
   npx ts-node cli/index.ts vend-token <userId>

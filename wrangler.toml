@@ -3,7 +3,7 @@ main = "src/Pluct-Core-Gateway-Main.ts"
 compatibility_date = "2024-10-01"
 
 [vars]
-TTT_BASE = "https://your-ttt-host"   # where TTTranscribe runs
+TTT_BASE = "https://iamromeoly-tttranscribe.hf.space"   # where TTTranscribe runs
 LOG_LEVEL = "info"                   # debug, info, warn, error
 MAX_RETRIES = "3"                    # Maximum retry attempts
 REQUEST_TIMEOUT = "30000"            # Request timeout in milliseconds
