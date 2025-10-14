@@ -1,12 +1,16 @@
 name = "pluct-business-engine"
-main = "src/index.ts"
+main = "src/Pluct-Core-Gateway-Main.ts"
 compatibility_date = "2024-10-01"
 
 [vars]
 TTT_BASE = "https://your-ttt-host"   # where TTTranscribe runs
+LOG_LEVEL = "info"                   # debug, info, warn, error
+MAX_RETRIES = "3"                    # Maximum retry attempts
+REQUEST_TIMEOUT = "30000"            # Request timeout in milliseconds
 
-[kv_namespaces]
-  [{ binding = "KV_USERS", id = "xxxxx" }]
+[[kv_namespaces]]
+binding = "KV_USERS"
+id = "your-kv-namespace-id"
 
 # Add secrets at deploy time (do not hardcode)
 # wrangler secret put ENGINE_JWT_SECRET
