@@ -167,8 +167,8 @@ npx wrangler dev --port 8787
 # Test build
 npm run build
 
-# Test simplified gateway
-npm run test:gateway
+# Orchestrated end-to-end (fail-fast)
+npm run test:orchestrator
 
 # Test production
 npm run test:production

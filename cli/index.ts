@@ -43,6 +43,14 @@ function detectAuth(env: EnvVars) {
   };
 }
 
+function buildAuthHeaders(env: EnvVars, kind: 'admin' | 'apikey' | 'webhook'): Record<string,string> {
+  const auth = detectAuth(env);
+  if (kind === 'admin' && auth.adminBearer) return { 'Authorization': `Bearer ${auth.adminBearer}` };
+  if (kind === 'apikey' && auth.apiKey) return { 'X-API-Key': auth.apiKey };
+  if (kind === 'webhook' && auth.webhookSecret) return { 'x-webhook-secret': auth.webhookSecret };
+  return {};
+}
+
 function nowTs(): string {
   return new Date().toISOString();
 }
@@ -88,13 +96,13 @@ async function cmdStatus(env: EnvVars, exitOnComplete: boolean = true) {
 async function cmdSeedCredits(env: EnvVars, userId: string, amount: number, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const attempts: Array<{ url: string; headers: Record<string,string> }> = [];
-  const apiKey = env.ENGINE_ADMIN_KEY || '';
-  const adminBearer = env.ADMIN_SECRET || '';
-  const webhookSecret = env.WEBHOOK_SECRET || '';
+  const apiKeyHeaders = buildAuthHeaders(env, 'apikey');
+  const adminHeaders = buildAuthHeaders(env, 'admin');
+  const webhookHeaders = buildAuthHeaders(env, 'webhook');
 
-  if (apiKey) attempts.push({ url: `${base}/v1/credits/add`, headers: { 'X-API-Key': apiKey } });
-  if (adminBearer) attempts.push({ url: `${base}/admin/credits/add`, headers: { 'Authorization': `Bearer ${adminBearer}` } });
-  if (webhookSecret) attempts.push({ url: `${base}/add-credits`, headers: { 'x-webhook-secret': webhookSecret, 'Content-Type': 'application/json' } });
+  if (Object.keys(apiKeyHeaders).length) attempts.push({ url: `${base}/v1/credits/add`, headers: apiKeyHeaders });
+  if (Object.keys(adminHeaders).length) attempts.push({ url: `${base}/admin/credits/add`, headers: adminHeaders });
+  if (Object.keys(webhookHeaders).length) attempts.push({ url: `${base}/add-credits`, headers: { ...webhookHeaders, 'Content-Type': 'application/json' } });
 
   let lastResp: any = null;
   for (const attempt of attempts) {
@@ -152,8 +160,7 @@ async function cmdAddUser(env: EnvVars, userId: string, initialCredits: number, 
 async function cmdAdminListUsers(env: EnvVars, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const url = `${base}/admin/users`;
-  const adminBearer = detectAuth(env).adminBearer || '';
-  const { request, response, durationMs } = await httpJson('GET', url, undefined, adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {});
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, buildAuthHeaders(env, 'admin'));
   console.log(JSON.stringify({ command: 'admin-list-users', request, response, durationMs }, null, 2));
   logLine(`admin-list-users ${response.status}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
@@ -162,8 +169,7 @@ async function cmdAdminListUsers(env: EnvVars, exitOnComplete: boolean = true) {
 async function cmdAdminListTransactions(env: EnvVars, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
   const url = `${base}/admin/transactions`;
-  const adminBearer = detectAuth(env).adminBearer || '';
-  const { request, response, durationMs } = await httpJson('GET', url, undefined, adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {});
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, buildAuthHeaders(env, 'admin'));
   console.log(JSON.stringify({ command: 'admin-list-transactions', request, response, durationMs }, null, 2));
   logLine(`admin-list-transactions ${response.status}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
@@ -171,8 +177,7 @@ async function cmdAdminListTransactions(env: EnvVars, exitOnComplete: boolean = 
 
 async function cmdAdminApiKeys(env: EnvVars, action: string, arg?: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
-  const adminBearer = detectAuth(env).adminBearer || '';
-  const auth = adminBearer ? { 'Authorization': `Bearer ${adminBearer}` } : {};
+  const auth = buildAuthHeaders(env, 'admin');
   if (action === 'list') {
     const url = `${base}/admin/api-keys`;
     const { request, response, durationMs } = await httpJson('GET', url, undefined, auth);

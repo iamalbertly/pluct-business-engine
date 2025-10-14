@@ -25,6 +25,8 @@
 		"cli:vend": "tsx cli/index.ts vend-token",
 		"cli:balance": "tsx cli/index.ts balance",
 		"cli:menu": "tsx cli/index.ts menu"
+		,
+		"test:orchestrator": "powershell -ExecutionPolicy Bypass -File .\\Pluct-Test-Orchestrator.ps1 -Target production"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
