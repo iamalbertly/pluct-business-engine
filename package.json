@@ -18,7 +18,11 @@
 		"build": "wrangler build",
 		"preview": "wrangler dev --remote",
 		"lint": "echo 'Linting skipped - no ESLint configured'",
-		"lint:fix": "echo 'Linting skipped - no ESLint configured'"
+		"lint:fix": "echo 'Linting skipped - no ESLint configured'",
+		"cli": "ts-node cli/index.ts",
+		"cli:status": "ts-node cli/index.ts status",
+		"cli:seed": "ts-node cli/index.ts seed-credits",
+		"cli:vend": "ts-node cli/index.ts vend-token"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
