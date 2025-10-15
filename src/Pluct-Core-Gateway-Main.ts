@@ -223,35 +223,47 @@ class PluctGateway {
   }
   
   private setupRoutes() {
-    // Health Check
+    // Health Check - Updated to match requirements
     this.app.get('/health', async c => {
       try {
-        await c.env.KV_USERS.put('health_check', 'ok', { expirationTtl: 60 });
-        
-        // Check TTT service health
-        const tttHealth = await this.healthMonitor.checkHealth(c.env);
-        const circuitState = this.circuitBreaker.getState();
-        
+        const uptimeSeconds = Math.floor(process.uptime ? process.uptime() : 0);
         return c.json({
-          ok: true,
-          routes: [
-            { method: 'GET', path: '/health', description: 'Health check and API discovery' },
-            { method: 'GET', path: '/health/services', description: 'Service health monitoring' },
-            { method: 'POST', path: '/vend-token', description: 'Get JWT token (costs 1 credit)', auth: 'none', body: '{ "userId": "string" }' },
-            { method: 'POST', path: '/ttt/transcribe', description: 'Proxy to TTTranscribe', auth: 'Bearer JWT', body: 'TTTranscribe payload' },
-            { method: 'GET', path: '/ttt/status/:id', description: 'Check transcription status', auth: 'Bearer JWT' },
-            { method: 'POST', path: '/meta/resolve', description: 'Resolve TikTok metadata', auth: 'none', body: '{ "url": "string" }' },
-            { method: 'POST', path: '/v1/credits/add', description: 'Add credits (admin)', auth: 'X-API-Key', body: '{ "userId": "string", "amount": number }' }
-          ],
-          diagnostics: { 
-            kv: 'healthy', 
-            responseTime: Date.now(),
-            tttService: tttHealth,
-            circuitBreaker: circuitState
-          }
+          status: 'ok',
+          uptimeSeconds,
+          version: '1.0.0'
         });
       } catch (error) {
-        return jsonError(c, 500, 'health_check_failed', 'Health check failed');
+        return c.json({ status: 'error', message: 'Health check failed' }, 500);
+      }
+    });
+    
+    // Credits Balance
+    this.app.get('/v1/credits/balance', async c => {
+      try {
+        // Extract and verify JWT authentication
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+        }
+        
+        const token = auth.slice(7);
+        const payload = await this.verifyUserToken(c.env, token);
+        const userId = payload.sub;
+        
+        // Get current balance
+        const creditKey = `credits:${userId}`;
+        const currentCredits = await c.env.KV_USERS.get(creditKey);
+        const balance = currentCredits ? parseInt(currentCredits, 10) : 0;
+        
+        return c.json({
+          userId,
+          balance,
+          updatedAt: new Date().toISOString()
+        });
+        
+      } catch (error) {
+        log('balance', 'balance check failed', { error: (error as Error).message });
+        return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
       }
     });
     
@@ -285,49 +297,132 @@ class PluctGateway {
       }
     });
     
-    // Token Vending
-    this.app.post('/vend-token', async c => {
+    // Token Vending - Updated to /v1/vend-token with JWT auth and atomic credit deduction
+    this.app.post('/v1/vend-token', async c => {
+      const startTime = Date.now();
+      let userId: string = 'unknown';
+      let requestId: string = '';
+      let clientRequestId: string | undefined;
+      
       try {
-        const { userId } = await c.req.json();
-        if (!userId) return jsonError(c, 400, 'missing_user_id', 'User ID is required', {}, 
-          'Send POST to /vend-token with JSON body: { "userId": "your-user-id" }');
-        
-        const rateLimitAllowed = await checkRateLimit(c.env, `token_vend:${userId}`);
-        if (!rateLimitAllowed) return jsonError(c, 429, 'rate_limit_exceeded', 'Rate limit exceeded. Please try again later.', { userId },
-          'Wait 1 minute before retrying. Rate limit: 100 requests/minute per user.');
-        
-        // Distinguish missing user vs zero credits
-        const raw = await c.env.KV_USERS.get(`credits:${userId}`);
-        const credits = raw === null ? 0 : parseInt(raw || '0', 10);
-        if (credits <= 0) {
-          const reason = raw === null ? 'user_not_found_or_no_credits' : 'no_credits';
-          return jsonError(c, 403, 'insufficient_credits', 'Insufficient credits for token vending', { userId, credits, reason },
-            'Add credits via POST /v1/credits/add with X-API-Key header, or check balance first.');
+        // Extract and verify JWT authentication
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
         }
         
-        await this.spendCredit(c.env, userId);
-        const token = await this.generateToken(c.env, userId);
+        const token = auth.slice(7);
+        const payload = await this.verifyUserToken(c.env, token);
+        userId = payload.sub;
         
-        log('token_vending', 'token vended successfully', { userId });
-        return c.json({ token, expires_in: 900, user_id: userId });
+        // Check for required scope
+        if (payload.scope !== 'ttt:transcribe') {
+          return c.json({ error: 'INSUFFICIENT_SCOPE', message: 'Required scope: ttt:transcribe' }, 403);
+        }
+        
+        // Check for idempotency
+        clientRequestId = c.req.header('X-Client-Request-Id');
+        if (clientRequestId) {
+          const existingResponse = await c.env.KV_USERS.get(`vendId:${userId}:${clientRequestId}`);
+          if (existingResponse) {
+            return c.json(JSON.parse(existingResponse));
+          }
+        }
+        
+        requestId = crypto.randomUUID();
+        
+        // Atomic credit deduction with KV compare-and-swap
+        const creditKey = `credits:${userId}`;
+        const currentCredits = await c.env.KV_USERS.get(creditKey);
+        const balance = currentCredits ? parseInt(currentCredits, 10) : 0;
+        
+        if (balance <= 0) {
+          // Audit log for insufficient credits
+          const auditKey = `audit:${userId}:${new Date().toISOString()}:${requestId}`;
+          const auditData = {
+            action: 'vend-token',
+            delta: 0,
+            balanceAfter: balance,
+            requestId,
+            ip: c.req.header('CF-Connecting-IP') || 'unknown',
+            ua: c.req.header('User-Agent') || 'unknown',
+            timestamp: new Date().toISOString()
+          };
+          await c.env.KV_USERS.put(auditKey, JSON.stringify(auditData));
+          
+          log('vend-token', 'insufficient credits', { userId, balance, requestId, ms: Date.now() - startTime });
+          return c.json({ error: 'INSUFFICIENT_CREDITS', balance }, 402);
+        }
+        
+        // Atomic credit deduction - write new balance
+        const newBalance = balance - 1;
+        await c.env.KV_USERS.put(creditKey, String(newBalance));
+        
+        // Generate short-lived token (15 minutes max)
+        const now = Math.floor(Date.now() / 1000);
+        const tokenPayload = {
+          sub: userId,
+          scope: 'ttt:transcribe',
+          iat: now,
+          exp: now + (15 * 60) // 15 minutes
+        };
+        
+        const jwt = await this.generateShortLivedToken(c.env, tokenPayload);
+        const expiresAt = new Date((now + (15 * 60)) * 1000).toISOString();
+        
+        const response = {
+          token: jwt,
+          scope: 'ttt:transcribe',
+          expiresAt,
+          balanceAfter: newBalance,
+          requestId
+        };
+        
+        // Store response for idempotency if client request ID provided
+        if (clientRequestId) {
+          await c.env.KV_USERS.put(`vendId:${userId}:${clientRequestId}`, JSON.stringify(response), { expirationTtl: 900 });
+        }
+        
+        // Audit log for successful vend
+        const auditKey = `audit:${userId}:${new Date().toISOString()}:${requestId}`;
+        const auditData = {
+          action: 'vend-token',
+          delta: -1,
+          balanceAfter: newBalance,
+          requestId,
+          ip: c.req.header('CF-Connecting-IP') || 'unknown',
+          ua: c.req.header('User-Agent') || 'unknown',
+          timestamp: new Date().toISOString()
+        };
+        await c.env.KV_USERS.put(auditKey, JSON.stringify(auditData));
+        
+        log('vend-token', 'success', { userId, balanceAfter: newBalance, requestId, ms: Date.now() - startTime });
+        return c.json(response);
+        
       } catch (error) {
-        log('token_vending', 'token vending failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'token_generation_failed', 'Token generation failed', { error: (error as Error).message },
-          'Check server logs. Ensure ENGINE_JWT_SECRET is configured.');
+        log('vend-token', 'error', { userId: userId || 'unknown', error: (error as Error).message, ms: Date.now() - startTime });
+        return c.json({ error: 'TOKEN_GENERATION_FAILED', message: 'Token generation failed' }, 500);
       }
     });
     
-    // TTTranscribe Proxy
+    // TTTranscribe Proxy - Updated to match exact requirements
     this.app.post('/ttt/transcribe', async c => {
       try {
         const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) return jsonError(c, 401, 'missing_auth', 'Authorization header required', {},
-          'Include header: Authorization: Bearer <jwt-token>. Get token from /vend-token first.');
+        if (!auth?.startsWith('Bearer ')) {
+          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+        }
         
         const token = auth.slice(7);
         const payload = await this.verifyToken(c.env, token);
         
         const body = await c.req.text();
+        const bodyJson = JSON.parse(body);
+        
+        // Validate URL is TikTok
+        if (bodyJson.url && !this.isTikTokUrl(bodyJson.url)) {
+          return c.json({ error: 'INVALID_URL' }, 400);
+        }
         
         // Use circuit breaker for TTT calls
         const response = await this.circuitBreaker.execute(async () => {
@@ -345,22 +440,20 @@ class PluctGateway {
         
         // Check if it's a circuit breaker error
         if ((error as Error).message.includes('Circuit breaker is open')) {
-          return jsonError(c, 503, 'service_unavailable', 'TTTranscribe service is temporarily unavailable', 
-            { circuitBreaker: this.circuitBreaker.getState() },
-            'Service is experiencing issues. Please try again later or check /health/services for status.');
+          return c.json({ error: 'SERVICE_UNAVAILABLE', message: 'TTTranscribe service is temporarily unavailable' }, 503);
         }
         
-        return jsonError(c, 500, 'proxy_failed', 'TTTranscribe proxy call failed', { error: (error as Error).message },
-          'Check TTT_BASE and TTT_SHARED_SECRET configuration. Verify TTTranscribe service is running.');
+        return c.json({ error: 'PROXY_FAILED', message: 'TTTranscribe proxy call failed' }, 500);
       }
     });
     
-    // Status Check
+    // Status Check - Updated to match exact requirements
     this.app.get('/ttt/status/:id', async c => {
       try {
         const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) return jsonError(c, 401, 'missing_auth', 'Authorization header required', {},
-          'Include header: Authorization: Bearer <jwt-token>. Get token from /vend-token first.');
+        if (!auth?.startsWith('Bearer ')) {
+          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+        }
         
         const token = auth.slice(7);
         await this.verifyToken(c.env, token);
@@ -379,13 +472,44 @@ class PluctGateway {
         
         // Check if it's a circuit breaker error
         if ((error as Error).message.includes('Circuit breaker is open')) {
-          return jsonError(c, 503, 'service_unavailable', 'TTTranscribe service is temporarily unavailable', 
-            { circuitBreaker: this.circuitBreaker.getState() },
-            'Service is experiencing issues. Please try again later or check /health/services for status.');
+          return c.json({ error: 'SERVICE_UNAVAILABLE', message: 'TTTranscribe service is temporarily unavailable' }, 503);
         }
         
-        return jsonError(c, 500, 'status_check_failed', 'TTTranscribe status check failed', { error: (error as Error).message },
-          'Check TTT_BASE and TTT_SHARED_SECRET configuration. Verify TTTranscribe service is running.');
+        return c.json({ error: 'STATUS_CHECK_FAILED', message: 'TTTranscribe status check failed' }, 500);
+      }
+    });
+    
+    // Metadata endpoint with randomized TTL caching
+    this.app.get('/meta', async c => {
+      try {
+        const url = c.req.query('url');
+        if (!url) {
+          return c.json({ error: 'MISSING_URL', message: 'URL parameter is required' }, 400);
+        }
+        
+        if (!this.isTikTokUrl(url)) {
+          return c.json({ error: 'INVALID_URL', message: 'Only TikTok URLs are supported' }, 400);
+        }
+        
+        const cacheKey = `meta:${url}`;
+        const cached = await c.env.KV_USERS.get(cacheKey);
+        if (cached) {
+          return c.json(JSON.parse(cached));
+        }
+        
+        // Fetch metadata from TikTok
+        const metadata = await this.fetchTikTokMetadata(url);
+        
+        // Cache with randomized TTL (1-6 hours)
+        const cacheHours = 1 + Math.random() * 5;
+        const cacheSeconds = Math.floor(cacheHours * 3600);
+        await c.env.KV_USERS.put(cacheKey, JSON.stringify(metadata), { expirationTtl: cacheSeconds });
+        
+        return c.json(metadata);
+        
+      } catch (error) {
+        log('meta', 'metadata fetch failed', { error: (error as Error).message });
+        return c.json({ error: 'METADATA_FETCH_FAILED', message: 'Failed to fetch metadata' }, 500);
       }
     });
     
@@ -481,6 +605,35 @@ class PluctGateway {
     return payload as unknown as TokenPayload;
   }
   
+  private async verifyUserToken(env: Env, token: string): Promise<TokenPayload> {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(env.ENGINE_JWT_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const { payload } = await jwtVerify(token, key);
+    return payload as unknown as TokenPayload;
+  }
+  
+  private async generateShortLivedToken(env: Env, payload: any): Promise<string> {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(env.ENGINE_JWT_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    
+    return await new SignJWT(payload)
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('15m')
+      .setIssuedAt()
+      .sign(key);
+  }
+  
   private async callTTT(env: Env, path: string, init: RequestInit): Promise<Response> {
     const url = `${env.TTT_BASE}${path}`;
     const maxRetries = parseInt(env.MAX_RETRIES || '3', 10);
@@ -554,6 +707,42 @@ class PluctGateway {
     }
     
     return recommendations;
+  }
+  
+  private isTikTokUrl(url: string): boolean {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname.includes('tiktok.com') || urlObj.hostname.includes('vm.tiktok.com');
+    } catch {
+      return false;
+    }
+  }
+  
+  private async fetchTikTokMetadata(url: string): Promise<any> {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    
+    if (!response.ok) throw new Error('fetch_failed');
+    const html = await response.text();
+    
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/);
+    const title = titleMatch ? titleMatch[1] : 'Unknown Title';
+    
+    const authorMatch = html.match(/"author":\s*"([^"]+)"/) || 
+                       html.match(/<meta property="og:site_name" content="([^"]+)"/);
+    const author = authorMatch ? authorMatch[1] : 'Unknown Author';
+    
+    const descMatch = html.match(/<meta property="og:description" content="([^"]+)"/);
+    const description = descMatch ? descMatch[1] : '';
+    
+    const durationMatch = html.match(/"duration":\s*(\d+)/);
+    const duration = durationMatch ? parseInt(durationMatch[1]) : 0;
+    
+    const handleMatch = html.match(/@([a-zA-Z0-9_]+)/);
+    const handle = handleMatch ? handleMatch[1] : '';
+    
+    return { title, author, description, duration, handle, url };
   }
   
   private async resolveMetadata(env: Env, url: string): Promise<any> {

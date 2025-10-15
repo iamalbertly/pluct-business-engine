@@ -55,6 +55,33 @@ function nowTs(): string {
   return new Date().toISOString();
 }
 
+async function createUserToken(env: EnvVars, userId: string): Promise<string> {
+  // For CLI testing, we'll create a simple user token
+  // In production, this would be handled by the authentication system
+  const jwtSecret = env.ENGINE_JWT_SECRET || 'test-secret';
+  const { SignJWT } = await import('jose');
+  
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(jwtSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  
+  const now = Math.floor(Date.now() / 1000);
+  return await new SignJWT({
+    sub: userId,
+    scope: 'ttt:transcribe',
+    iat: now,
+    exp: now + (15 * 60) // 15 minutes
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('15m')
+    .setIssuedAt()
+    .sign(key);
+}
+
 function logLine(message: string) {
   const logDir = path.join(process.cwd(), 'logs');
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
@@ -104,35 +131,21 @@ async function cmdServiceHealth(env: EnvVars, exitOnComplete: boolean = true) {
 
 async function cmdSeedCredits(env: EnvVars, userId: string, amount: number, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
-  const attempts: Array<{ url: string; headers: Record<string,string> }> = [];
+  const url = `${base}/v1/credits/add`;
   const apiKeyHeaders = buildAuthHeaders(env, 'apikey');
-  const adminHeaders = buildAuthHeaders(env, 'admin');
-  const webhookHeaders = buildAuthHeaders(env, 'webhook');
-
-  if (Object.keys(apiKeyHeaders).length) attempts.push({ url: `${base}/v1/credits/add`, headers: apiKeyHeaders });
-  if (Object.keys(adminHeaders).length) attempts.push({ url: `${base}/admin/credits/add`, headers: adminHeaders });
-  if (Object.keys(webhookHeaders).length) attempts.push({ url: `${base}/add-credits`, headers: { ...webhookHeaders, 'Content-Type': 'application/json' } });
-
-  let lastResp: any = null;
-  for (const attempt of attempts) {
-    const { request, response, durationMs } = await httpJson('POST', attempt.url, { userId, amount }, attempt.headers);
-    lastResp = { request, response, durationMs };
-    if (response.ok) {
-      console.log(JSON.stringify({ command: 'seed-credits', userId, amount, request, response, durationMs }, null, 2));
-      logLine(`seed-credits ${response.status} userId=${userId} amount=${amount} via=${attempt.url}`);
-      if (exitOnComplete) process.exit(0);
-      return;
-    }
-  }
-  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, ...lastResp }, null, 2));
-  logLine(`seed-credits failed userId=${userId} amount=${amount}`);
-  if (exitOnComplete) process.exit(1);
+  
+  const { request, response, durationMs } = await httpJson('POST', url, { userId, amount }, apiKeyHeaders);
+  console.log(JSON.stringify({ command: 'seed-credits', userId, amount, request, response, durationMs }, null, 2));
+  logLine(`seed-credits ${response.status} userId=${userId} amount=${amount}`);
+  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
 async function cmdVendToken(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
-  const url = `${base}/vend-token`;
-  const { request, response, durationMs } = await httpJson('POST', url, { userId });
+  const url = `${base}/v1/vend-token`;
+  // Need to create a user JWT token first for authentication
+  const userToken = await createUserToken(env, userId);
+  const { request, response, durationMs } = await httpJson('POST', url, {}, { 'Authorization': `Bearer ${userToken}` });
   console.log(JSON.stringify({ command: 'vend-token', request, response, userId, durationMs }, null, 2));
   logLine(`vend-token ${response.status} userId=${userId}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
@@ -150,80 +163,42 @@ async function cmdValidate(env: EnvVars, token: string, exitOnComplete: boolean 
 
 async function cmdBalance(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
-  const url = `${base}/user/${encodeURIComponent(userId)}/balance`;
-  const { request, response, durationMs } = await httpJson('GET', url);
+  const url = `${base}/v1/credits/balance`;
+  // Need to create a user JWT token first for authentication
+  const userToken = await createUserToken(env, userId);
+  const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${userToken}` });
   console.log(JSON.stringify({ command: 'balance', userId, request, response, durationMs }, null, 2));
   logLine(`balance ${response.status} userId=${userId}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
 }
 
 async function cmdAddUser(env: EnvVars, userId: string, initialCredits: number, exitOnComplete: boolean = true) {
-  const base = getBaseUrl(env);
-  const url = `${base}/user/create`;
-  const { request, response, durationMs } = await httpJson('POST', url, { userId, initialCredits });
-  console.log(JSON.stringify({ command: 'add-user', request, response, durationMs }, null, 2));
-  logLine(`add-user ${response.status} userId=${userId} credits=${initialCredits}`);
-  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+  // For our implementation, we just add credits directly since users are created implicitly
+  await cmdSeedCredits(env, userId, initialCredits, exitOnComplete);
 }
 
 async function cmdAdminListUsers(env: EnvVars, exitOnComplete: boolean = true) {
-  const base = getBaseUrl(env);
-  const url = `${base}/admin/users`;
-  const { request, response, durationMs } = await httpJson('GET', url, undefined, buildAuthHeaders(env, 'admin'));
-  console.log(JSON.stringify({ command: 'admin-list-users', request, response, durationMs }, null, 2));
-  logLine(`admin-list-users ${response.status}`);
-  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+  console.log(JSON.stringify({ command: 'admin-list-users', message: 'Admin endpoints not implemented in this version' }, null, 2));
+  logLine(`admin-list-users not implemented`);
+  if (exitOnComplete) process.exit(0);
 }
 
 async function cmdAdminListTransactions(env: EnvVars, exitOnComplete: boolean = true) {
-  const base = getBaseUrl(env);
-  const url = `${base}/admin/transactions`;
-  const { request, response, durationMs } = await httpJson('GET', url, undefined, buildAuthHeaders(env, 'admin'));
-  console.log(JSON.stringify({ command: 'admin-list-transactions', request, response, durationMs }, null, 2));
-  logLine(`admin-list-transactions ${response.status}`);
-  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+  console.log(JSON.stringify({ command: 'admin-list-transactions', message: 'Admin endpoints not implemented in this version' }, null, 2));
+  logLine(`admin-list-transactions not implemented`);
+  if (exitOnComplete) process.exit(0);
 }
 
 async function cmdAdminApiKeys(env: EnvVars, action: string, arg?: string, exitOnComplete: boolean = true) {
-  const base = getBaseUrl(env);
-  const auth = buildAuthHeaders(env, 'admin');
-  if (action === 'list') {
-    const url = `${base}/admin/api-keys`;
-    const { request, response, durationMs } = await httpJson('GET', url, undefined, auth);
-    console.log(JSON.stringify({ command: 'admin-api-keys', action, request, response, durationMs }, null, 2));
-    logLine(`admin-api-keys:list ${response.status}`);
-    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
-    return;
-  } else if (action === 'create') {
-    const url = `${base}/admin/api-keys/create`;
-    const name = arg || `cli-key-${Date.now()}`;
-    const { request, response, durationMs } = await httpJson('POST', url, { name }, auth);
-    console.log(JSON.stringify({ command: 'admin-api-keys', action, name, request, response, durationMs }, null, 2));
-    logLine(`admin-api-keys:create ${response.status} name=${name}`);
-    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
-    return;
-  } else if (action === 'revoke') {
-    const id = arg;
-    if (!id) { console.error('Usage: admin:api-keys revoke <id>'); process.exit(2); }
-    const url = `${base}/admin/api-keys/${encodeURIComponent(id)}/revoke`;
-    const { request, response, durationMs } = await httpJson('POST', url, {}, auth);
-    console.log(JSON.stringify({ command: 'admin-api-keys', action, id, request, response, durationMs }, null, 2));
-    logLine(`admin-api-keys:revoke ${response.status} id=${id}`);
-    if (exitOnComplete) process.exit(response.ok ? 0 : 1);
-    return;
-  } else {
-    console.error('Usage: admin:api-keys <list|create [name]|revoke <id>>');
-    process.exit(2);
-  }
+  console.log(JSON.stringify({ command: 'admin-api-keys', action, message: 'Admin endpoints not implemented in this version' }, null, 2));
+  logLine(`admin-api-keys:${action} not implemented`);
+  if (exitOnComplete) process.exit(0);
 }
 
 async function cmdUserTransactions(env: EnvVars, userId: string, exitOnComplete: boolean = true) {
-  const base = getBaseUrl(env);
-  const url = `${base}/user/${encodeURIComponent(userId)}/transactions`;
-  const { request, response, durationMs } = await httpJson('GET', url);
-  console.log(JSON.stringify({ command: 'user-transactions', userId, request, response, durationMs }, null, 2));
-  logLine(`user-transactions ${response.status} userId=${userId}`);
-  if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+  console.log(JSON.stringify({ command: 'user-transactions', userId, message: 'User transaction endpoints not implemented in this version' }, null, 2));
+  logLine(`user-transactions not implemented userId=${userId}`);
+  if (exitOnComplete) process.exit(0);
 }
 
 async function cmdTttTranscribe(env: EnvVars, token: string, payloadJson: string, exitOnComplete: boolean = true) {
