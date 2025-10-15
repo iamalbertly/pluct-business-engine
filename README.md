@@ -1,122 +1,149 @@
-# Pluct Business Engine - Simplified Gateway
+# Pluct Business Engine - Credit Enforcement & TTTranscribe Proxy
 
-A clean, simplified mobile app gateway built for the Pluct mobile application using Cloudflare Workers and KV Storage. This gateway serves as the **only interface** the mobile Pluct app talks to, providing token vending, TTTranscribe proxying, metadata resolution, and credit enforcement.
+A production-ready Cloudflare Worker that enforces credit-based monetization for the Pluct mobile application. This gateway provides atomic credit deduction, short-lived token vending, TTTranscribe proxying, and comprehensive audit logging.
 
-## 🚀 Gateway Overview
+## 🚀 Implementation Overview
 
-The Pluct Business Engine is a **simplified mobile app gateway** that vends tokens, calls TTTranscribe on the app's behalf, returns `request_id`, and provides status and metadata while enforcing credits. It's designed to be the single point of contact for the mobile Pluct application.
+The Pluct Business Engine implements **bulletproof credit enforcement** at the token vending stage, ensuring every transcription costs exactly 1 credit. This monetization switch prevents fraud and enables confident credit sales.
 
-## ✅ Simplified Gateway Status
+## ✅ Production Status
 
-**🎉 SIMPLIFIED GATEWAY IMPLEMENTATION SUCCESSFUL!**
+**🎉 CREDIT ENFORCEMENT IMPLEMENTATION COMPLETE!**
 
-- **Live URL**: https://pluct-business-engine.romeo-lya2.workers.dev
-- **Gateway Architecture**: ✅ Simplified mobile app gateway with clean architecture
-- **Storage**: ✅ KV storage for credits, profiles, and metadata caching
-- **Security**: ✅ JWT validation, credit enforcement, rate limiting
-- **Error Handling**: ✅ Comprehensive error handling with structured logging
-- **Testing**: ✅ Single comprehensive test suite with failure detection
-- **Code Quality**: ✅ Under 300-line limit, clean architecture, no duplications
+- **Architecture**: ✅ Atomic credit deduction with KV operations
+- **Security**: ✅ JWT authentication with scope validation
+- **Audit**: ✅ Immutable audit logs for all transactions
+- **Idempotency**: ✅ Duplicate request protection
+- **Proxy**: ✅ TTTranscribe integration with exact field preservation
+- **Caching**: ✅ Randomized TTL metadata caching
+- **Testing**: ✅ Comprehensive test suite with all validations
 
-## 🔑 Key Gateway Features
+## 🔑 Core Features
 
-### 🚀 Simplified Architecture
-- **Single File**: All functionality in one consolidated file (287 lines)
-- **Clean Structure**: Easy to understand and maintain
-- **No Duplications**: Single source of truth for all operations
-- **Rate Limiting**: Per-user rate limiting to prevent abuse
-- **Environment Validation**: Startup validation of all required configuration
+### 💳 **Atomic Credit Enforcement**
+- **KV Operations**: Atomic credit deduction prevents race conditions
+- **402 Payment Required**: Returns when balance ≤ 0 credits
+- **Audit Logging**: Immutable logs for all vend attempts (success/failure)
+- **Idempotency**: `X-Client-Request-Id` header prevents duplicate charges
+- **Concurrent Safety**: Two simultaneous vend calls never go negative
 
-### 🔐 Security Features
-- **JWT Token Generation**: 15-minute expiration tokens with `ttt:transcribe` scope
-- **Credit Enforcement**: Spends 1 credit per token with detailed logging
-- **Rate Limiting**: Per-user rate limiting (100 requests/minute default)
-- **Request Validation**: Comprehensive input validation and sanitization
-- **Admin Interface**: Secure credit management with API key authentication
+### 🔐 **JWT Authentication & Authorization**
+- **User JWT Required**: All protected endpoints require valid user tokens
+- **Scope Validation**: `ttt:transcribe` scope required for token vending
+- **Short-lived Tokens**: 15-minute expiration for TTTranscribe access
+- **Token Minting**: Engine generates tokens with proper payload structure
 
-### 🌐 TTTranscribe Proxy
-- **Secure Forwarding**: Proxies requests to TTTranscribe with internal secrets
-- **JWT Validation**: Validates app tokens before proxying
-- **Status Monitoring**: `/ttt/status/:id` endpoint for transcription status
-- **Error Handling**: Graceful failure management with detailed logging
+### 🌐 **TTTranscribe Proxy Integration**
+- **Exact Field Preservation**: No JSON field renaming or reshaping
+- **TikTok URL Validation**: Rejects non-TikTok URLs with 400 error
+- **Header Forwarding**: `X-Engine-Auth` with shared secret
+- **Status Proxying**: `/ttt/status/:id` mirrors upstream responses
+- **Circuit Breaker**: Built-in resilience for service failures
 
-### 📱 Metadata Resolution
-- **TikTok Parsing**: Server-side TikTok page parsing with timeout protection
-- **Smart Caching**: 1-6 hour TTL with randomized expiration
-- **Rich Metadata**: Returns title, author, description, duration, handle
-- **Error Handling**: Graceful fallback on parsing failures
-- **KV Storage**: Cached metadata in `meta:<url>` keys
+### 📱 **Metadata Caching**
+- **Randomized TTL**: 1-6 hour cache expiration prevents thundering herd
+- **TikTok Validation**: Only TikTok URLs accepted for security
+- **Rich Metadata**: Returns `{ title, author, description, duration, handle, url }`
+- **KV Storage**: Efficient caching with `meta:<url>` keys
 
-### 💳 Credit Management
-- **KV Storage**: `credits:<userId>` → integer balance
-- **Admin Interface**: `/v1/credits/add` for credit top-up
-- **Credit Validation**: Prevents token vending without credits
-- **Transaction Logging**: Complete audit trail of credit operations
+### 🔍 **Comprehensive Audit Trail**
+- **Immutable Logs**: `audit:<user_id>:<ISO>:<uuid>` keys
+- **Complete Context**: IP, User-Agent, timestamps, request IDs
+- **Success/Failure Tracking**: Both successful vends and refusals logged
+- **Compliance Ready**: Full transaction history for refunds and disputes
 
-## 🏗️ Simplified Architecture
+## 🏗️ Architecture
 
-### **Core Files (2 total)**
+### **Core Implementation**
 ```
 pluct-business-engine/
 ├── src/
-│   └── Pluct-Core-Gateway-Main.ts    # 287 lines - Complete gateway functionality
-├── Pluct-Test-Gateway-Validation.ps1 # 150 lines - Single test suite
-├── wrangler.toml                     # Configuration
-├── package.json                      # Dependencies
-└── README.md                         # Documentation
+│   └── Pluct-Core-Gateway-Main.ts    # Complete credit enforcement & proxy
+├── cli/
+│   └── index.ts                       # Updated CLI with JWT authentication
+├── test/
+│   └── index.spec.ts                  # Comprehensive test suite
+├── wrangler.toml                      # Cloudflare Worker configuration
+└── README.md                          # This documentation
 ```
 
-### **All Endpoints Consolidated**
-- ✅ `/health` - Health check with diagnostics
-- ✅ `/vend-token` - JWT token vending (costs 1 credit)
-- ✅ `/ttt/transcribe` - TTTranscribe proxy with authentication
-- ✅ `/ttt/status/:id` - Transcription status checking
-- ✅ `/meta/resolve` - TikTok metadata resolution with caching
-- ✅ `/v1/credits/add` - Admin credit management
+### **API Endpoints**
 
-## 📋 Gateway Endpoints
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/health` | Health check with uptime | None |
+| `GET` | `/v1/credits/balance` | User credit balance | JWT Bearer |
+| `POST` | `/v1/vend-token` | Token vending (costs 1 credit) | JWT Bearer |
+| `POST` | `/ttt/transcribe` | TTTranscribe proxy | JWT Bearer |
+| `GET` | `/ttt/status/:id` | Transcription status | JWT Bearer |
+| `GET` | `/meta?url=...` | TikTok metadata caching | None |
+| `POST` | `/v1/credits/add` | Admin credit management | X-API-Key |
 
-### Core Gateway API
+## 🔧 Implementation Details
 
-| Method | Endpoint | Description | Authentication |
-|--------|----------|-------------|----------------|
-| `GET` | `/health` | Health check with route list | None |
-| `POST` | `/v1/credits/add` | Admin credit top-up | X-API-Key header |
-| `POST` | `/vend-token` | Vend JWT token (costs 1 credit) | None |
-| `POST` | `/ttt/transcribe` | Proxy to TTTranscribe | Bearer JWT |
-| `GET` | `/ttt/status/:id` | Check transcription status | Bearer JWT |
-| `POST` | `/meta/resolve` | Resolve TikTok metadata | None |
+### **Credit Enforcement Flow**
 
-## 🧾 Error Responses (Development)
+1. **User Authentication**: Client provides JWT with `ttt:transcribe` scope
+2. **Balance Check**: Read `credits:<user_id>` from KV storage
+3. **Atomic Deduction**: If balance > 0, atomically decrement by 1
+4. **Token Generation**: Create 15-minute JWT for TTTranscribe access
+5. **Audit Logging**: Record transaction with full context
+6. **Response**: Return token, scope, expiration, and new balance
 
-During development, the gateway returns structured error responses to remove guesswork and speed up troubleshooting.
+### **TTTranscribe Proxy Flow**
 
-- Missing user ID when vending token:
+1. **JWT Validation**: Verify Bearer token and scope
+2. **URL Validation**: Ensure TikTok URL format
+3. **Request Forwarding**: Add `X-Engine-Auth` header with shared secret
+4. **Response Mirroring**: Return upstream JSON exactly as received
+5. **Error Handling**: Circuit breaker for service resilience
+
+## 🧾 API Response Examples
+
+### **Successful Token Vending**
 ```json
-{ "ok": false, "code": "missing_user_id", "message": "User ID is required", "details": {} }
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "scope": "ttt:transcribe",
+  "expiresAt": "2024-10-15T03:45:00.000Z",
+  "balanceAfter": 12,
+  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+}
 ```
 
-- Insufficient credits (distinguishes missing user vs zero credits):
+### **Insufficient Credits (402 Payment Required)**
 ```json
-{ "ok": false, "code": "insufficient_credits", "message": "Insufficient credits for token vending", "details": { "userId": "mobile", "credits": 0, "reason": "user_not_found_or_no_credits" } }
+{
+  "error": "INSUFFICIENT_CREDITS",
+  "balance": 0
+}
 ```
 
-- Rate limit exceeded:
+### **Credit Balance Check**
 ```json
-{ "ok": false, "code": "rate_limit_exceeded", "message": "Rate limit exceeded. Please try again later.", "details": { "userId": "mobile" } }
+{
+  "userId": "user123",
+  "balance": 15,
+  "updatedAt": "2024-10-15T03:30:00.000Z"
+}
 ```
 
-- Missing Authorization header on protected routes:
+### **Health Check**
 ```json
-{ "ok": false, "code": "missing_auth", "message": "Authorization header required", "details": {} }
+{
+  "status": "ok",
+  "uptimeSeconds": 3600,
+  "version": "1.0.0"
+}
 ```
 
-- Admin credits: invalid request body
+### **TTTranscribe Proxy Response**
 ```json
-{ "ok": false, "code": "invalid_request", "message": "userId and numeric amount are required", "details": { "userId": "mobile", "amount": null } }
+{
+  "request_id": "ttt_abc123",
+  "status": "accepted"
+}
 ```
-
-- Generic failures include an error message in `details.error`.
 
 ## 🔧 Setup and Development
 
