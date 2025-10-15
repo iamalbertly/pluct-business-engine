@@ -178,17 +178,59 @@ async function checkRateLimit(env: Env, key: string): Promise<boolean> {
     if (count >= 100) return false;
     await env.KV_USERS.put(rateLimitKey, String(count + 1), { expirationTtl: 60 });
     return true;
-  } catch {
+  } catch (error) {
+    // If rate limiting fails, allow the request to proceed
+    // This prevents rate limiting from blocking legitimate requests
+    log('rate_limit', 'Rate limiting check failed, allowing request', { error: (error as Error).message, key });
     return true;
   }
 }
 
 function validateEnvironment(env: Env): void {
-  const required = ['ENGINE_JWT_SECRET', 'ENGINE_ADMIN_KEY', 'TTT_SHARED_SECRET', 'TTT_BASE'];
-  for (const key of required) {
-    if (!env[key as keyof Env]) throw new Error(`Missing ${key}`);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  
+  // Check required secrets
+  const requiredSecrets = [
+    { key: 'ENGINE_JWT_SECRET', description: 'JWT signing secret for user tokens' },
+    { key: 'ENGINE_ADMIN_KEY', description: 'Admin API key for credit management' },
+    { key: 'TTT_SHARED_SECRET', description: 'Shared secret for TTTranscribe communication' }
+  ];
+  
+  for (const secret of requiredSecrets) {
+    const value = env[secret.key as keyof Env];
+    if (!value) {
+      errors.push(`Missing ${secret.key}: ${secret.description}`);
+    } else if (value.length < 16) {
+      warnings.push(`${secret.key} is too short (${value.length} chars). Recommended: 32+ characters`);
+    }
   }
-  try { new URL(env.TTT_BASE); } catch { throw new Error('Invalid TTT_BASE URL'); }
+  
+  // Check TTT_BASE URL
+  if (!env.TTT_BASE) {
+    errors.push('Missing TTT_BASE: TTTranscribe service URL');
+  } else {
+    try {
+      const url = new URL(env.TTT_BASE);
+      if (url.protocol !== 'https:') {
+        warnings.push('TTT_BASE should use HTTPS protocol');
+      }
+    } catch (e) {
+      errors.push(`Invalid TTT_BASE URL: ${env.TTT_BASE}`);
+    }
+  }
+  
+  // Check KV namespace
+  if (!env.KV_USERS) {
+    errors.push('Missing KV_USERS: KV namespace binding not configured');
+  }
+  
+  // Throw error if any critical issues found
+  if (errors.length > 0) {
+    const errorMessage = `Configuration validation failed: ${errors.length} error(s), ${warnings.length} warning(s)`;
+    const details = [...errors, ...warnings].join('; ');
+    throw new Error(`${errorMessage}. Details: ${details}`);
+  }
 }
 
 class PluctGateway {
@@ -227,13 +269,75 @@ class PluctGateway {
     this.app.get('/health', async c => {
       try {
         const uptimeSeconds = Math.floor(process.uptime ? process.uptime() : 0);
+        
+        // Check configuration status
+        const configStatus = {
+          ENGINE_JWT_SECRET: !!c.env.ENGINE_JWT_SECRET,
+          ENGINE_ADMIN_KEY: !!c.env.ENGINE_ADMIN_KEY,
+          TTT_SHARED_SECRET: !!c.env.TTT_SHARED_SECRET,
+          TTT_BASE: !!c.env.TTT_BASE,
+          KV_USERS: !!c.env.KV_USERS
+        };
+        
+        const allConfigured = Object.values(configStatus).every(Boolean);
+        
         return c.json({
-          status: 'ok',
+          status: allConfigured ? 'ok' : 'configuration_error',
           uptimeSeconds,
-          version: '1.0.0'
+          version: '1.0.0',
+          configuration: configStatus,
+          issues: allConfigured ? [] : Object.entries(configStatus)
+            .filter(([_, configured]) => !configured)
+            .map(([key, _]) => `Missing ${key}`)
         });
       } catch (error) {
-        return c.json({ status: 'error', message: 'Health check failed' }, 500);
+        return c.json({ 
+          status: 'error', 
+          message: 'Health check failed',
+          error: (error as Error).message 
+        }, 500);
+      }
+    });
+    
+    // Configuration Debug Endpoint
+    this.app.get('/debug/config', async c => {
+      try {
+        const config = {
+          ENGINE_JWT_SECRET: c.env.ENGINE_JWT_SECRET ? 
+            `Configured (${c.env.ENGINE_JWT_SECRET.length} chars)` : 'Missing',
+          ENGINE_ADMIN_KEY: c.env.ENGINE_ADMIN_KEY ? 
+            `Configured (${c.env.ENGINE_ADMIN_KEY.length} chars)` : 'Missing',
+          TTT_SHARED_SECRET: c.env.TTT_SHARED_SECRET ? 
+            `Configured (${c.env.TTT_SHARED_SECRET.length} chars)` : 'Missing',
+          TTT_BASE: c.env.TTT_BASE || 'Missing',
+          KV_USERS: c.env.KV_USERS ? 'Configured' : 'Missing',
+          LOG_LEVEL: c.env.LOG_LEVEL || 'info (default)',
+          MAX_RETRIES: c.env.MAX_RETRIES || '3 (default)',
+          REQUEST_TIMEOUT: c.env.REQUEST_TIMEOUT || '30000 (default)'
+        };
+        
+        const missing = Object.entries(config)
+          .filter(([_, value]) => value === 'Missing')
+          .map(([key, _]) => key);
+        
+        return c.json({
+          status: missing.length === 0 ? 'ok' : 'configuration_error',
+          configuration: config,
+          missing: missing,
+          instructions: missing.length > 0 ? {
+            ENGINE_JWT_SECRET: 'Run: wrangler secret put ENGINE_JWT_SECRET',
+            ENGINE_ADMIN_KEY: 'Run: wrangler secret put ENGINE_ADMIN_KEY', 
+            TTT_SHARED_SECRET: 'Run: wrangler secret put TTT_SHARED_SECRET',
+            TTT_BASE: 'Check wrangler.toml [vars] section',
+            KV_USERS: 'Check wrangler.toml [[kv_namespaces]] section'
+          } : {}
+        });
+      } catch (error) {
+        return c.json({ 
+          status: 'error', 
+          message: 'Configuration debug failed',
+          error: (error as Error).message 
+        }, 500);
       }
     });
     
@@ -243,11 +347,11 @@ class PluctGateway {
         // Extract and verify JWT authentication
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
         }
         
         const token = auth.slice(7);
-        const payload = await this.verifyUserToken(c.env, token);
+        const payload = await this.verifyToken(c.env, token, false);
         const userId = payload.sub;
         
         // Get current balance
@@ -308,11 +412,11 @@ class PluctGateway {
         // Extract and verify JWT authentication
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
         }
         
         const token = auth.slice(7);
-        const payload = await this.verifyUserToken(c.env, token);
+        const payload = await this.verifyToken(c.env, token, false);
         userId = payload.sub;
         
         // Check for required scope
@@ -410,7 +514,7 @@ class PluctGateway {
       try {
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
         }
         
         const token = auth.slice(7);
@@ -421,7 +525,7 @@ class PluctGateway {
         
         // Validate URL is TikTok
         if (bodyJson.url && !this.isTikTokUrl(bodyJson.url)) {
-          return c.json({ error: 'INVALID_URL' }, 400);
+          return jsonError(c, 400, 'INVALID_URL', 'Invalid URL provided');
         }
         
         // Use circuit breaker for TTT calls
@@ -452,7 +556,7 @@ class PluctGateway {
       try {
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return c.json({ error: 'MISSING_AUTH', message: 'Authorization header required' }, 401);
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
         }
         
         const token = auth.slice(7);
@@ -484,11 +588,11 @@ class PluctGateway {
       try {
         const url = c.req.query('url');
         if (!url) {
-          return c.json({ error: 'MISSING_URL', message: 'URL parameter is required' }, 400);
+          return jsonError(c, 400, 'MISSING_URL', 'URL parameter is required');
         }
         
         if (!this.isTikTokUrl(url)) {
-          return c.json({ error: 'INVALID_URL', message: 'Only TikTok URLs are supported' }, 400);
+          return jsonError(c, 400, 'INVALID_URL', 'Only TikTok URLs are supported');
         }
         
         const cacheKey = `meta:${url}`;
@@ -509,7 +613,7 @@ class PluctGateway {
         
       } catch (error) {
         log('meta', 'metadata fetch failed', { error: (error as Error).message });
-        return c.json({ error: 'METADATA_FETCH_FAILED', message: 'Failed to fetch metadata' }, 500);
+        return jsonError(c, 500, 'METADATA_FETCH_FAILED', 'Failed to fetch metadata', { error: (error as Error).message });
       }
     });
     
@@ -570,28 +674,8 @@ class PluctGateway {
     await env.KV_USERS.put(`credits:${userId}`, String(cur - 1));
   }
   
-  private async generateToken(env: Env, userId: string): Promise<string> {
-    const sec = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(env.ENGINE_JWT_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    
-    return await new SignJWT({
-      sub: userId,
-      scope: 'ttt:transcribe',
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + (15 * 60)
-    })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime('15m')
-      .setIssuedAt()
-      .sign(sec);
-  }
   
-  private async verifyToken(env: Env, token: string): Promise<TokenPayload> {
+  private async verifyToken(env: Env, token: string, requireScope: boolean = true): Promise<TokenPayload> {
     const key = await crypto.subtle.importKey(
       'raw',
       new TextEncoder().encode(env.ENGINE_JWT_SECRET),
@@ -601,20 +685,11 @@ class PluctGateway {
     );
     
     const { payload } = await jwtVerify(token, key);
-    if (payload.scope !== 'ttt:transcribe') throw new Error('invalid_scope');
-    return payload as unknown as TokenPayload;
-  }
-  
-  private async verifyUserToken(env: Env, token: string): Promise<TokenPayload> {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(env.ENGINE_JWT_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
     
-    const { payload } = await jwtVerify(token, key);
+    if (requireScope && payload.scope !== 'ttt:transcribe') {
+      throw new Error('invalid_scope');
+    }
+    
     return payload as unknown as TokenPayload;
   }
   
