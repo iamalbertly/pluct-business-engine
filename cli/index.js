@@ -1,0 +1,501 @@
+#!/usr/bin/env node
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+function loadDevVars(filePath) {
+    const env = {};
+    if (!fs.existsSync(filePath)) {
+        return env;
+    }
+    const content = fs.readFileSync(filePath, 'utf-8');
+    for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#'))
+            continue;
+        const idx = line.indexOf('=');
+        if (idx === -1)
+            continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        env[key] = value;
+    }
+    return env;
+}
+function getEnv() {
+    const repoRoot = process.cwd();
+    const devVars = loadDevVars(path.join(repoRoot, '.dev.vars'));
+    // Prefer process.env overrides
+    return { ...devVars, ...process.env };
+}
+function getBaseUrl(env) {
+    // Use production URL by default; allow override via BASE_URL
+    return env.BASE_URL || 'https://pluct-business-engine.romeo-lya2.workers.dev';
+}
+function detectAuth(env) {
+    return {
+        apiKey: env.ENGINE_ADMIN_KEY || '',
+        adminBearer: env.ADMIN_SECRET || env.ADMIN_TOKEN || env.ENGINE_ADMIN_KEY || '',
+        webhookSecret: env.WEBHOOK_SECRET || '',
+    };
+}
+function buildAuthHeaders(env, kind) {
+    const auth = detectAuth(env);
+    if (kind === 'admin' && auth.adminBearer)
+        return { 'Authorization': `Bearer ${auth.adminBearer}` };
+    if (kind === 'apikey' && auth.apiKey)
+        return { 'X-API-Key': auth.apiKey };
+    if (kind === 'webhook' && auth.webhookSecret)
+        return { 'x-webhook-secret': auth.webhookSecret };
+    return {};
+}
+function nowTs() {
+    return new Date().toISOString();
+}
+async function createUserToken(env, userId) {
+    // For CLI testing, we'll create a simple user token
+    // In production, this would be handled by the authentication system
+    const jwtSecret = env.ENGINE_JWT_SECRET || 'test-secret';
+    const { SignJWT } = await Promise.resolve().then(() => __importStar(require('jose')));
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(jwtSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const now = Math.floor(Date.now() / 1000);
+    return await new SignJWT({
+        sub: userId,
+        scope: 'ttt:transcribe',
+        iat: now,
+        exp: now + (15 * 60) // 15 minutes
+    })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setExpirationTime('15m')
+        .setIssuedAt()
+        .sign(key);
+}
+function logLine(message) {
+    const logDir = path.join(process.cwd(), 'logs');
+    if (!fs.existsSync(logDir))
+        fs.mkdirSync(logDir, { recursive: true });
+    const line = `[${nowTs()}] ${message}\n`;
+    fs.appendFileSync(path.join(logDir, 'cli.log'), line);
+}
+async function httpJson(method, url, body, headers) {
+    const reqHeaders = { 'content-type': 'application/json', ...(headers || {}) };
+    const reqBody = body ? JSON.stringify(body) : undefined;
+    const requestInfo = { method, url, headers: reqHeaders, body: reqBody };
+    const startedAt = Date.now();
+    try {
+        const res = await fetch(url, { method, headers: reqHeaders, body: reqBody });
+        const text = await res.text();
+        let json = undefined;
+        try {
+            json = text ? JSON.parse(text) : undefined;
+        }
+        catch { }
+        const respHeaders = Object.fromEntries(Array.from(res.headers.entries()));
+        const responseInfo = { status: res.status, ok: res.ok, headers: respHeaders, text, json };
+        const durationMs = Date.now() - startedAt;
+        return { request: requestInfo, response: responseInfo, durationMs };
+    }
+    catch (err) {
+        const durationMs = Date.now() - startedAt;
+        const errorInfo = { message: String(err?.message || err), code: err?.code, stack: err?.stack };
+        const responseInfo = { status: 0, ok: false, headers: {}, text: '', json: undefined, error: errorInfo };
+        return { request: requestInfo, response: responseInfo, durationMs };
+    }
+}
+async function cmdStatus(env, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/health`;
+    const { request, response, durationMs } = await httpJson('GET', url);
+    console.log(JSON.stringify({ command: 'status', request, response, durationMs }, null, 2));
+    logLine(`status ${response.status} url=${url}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdServiceHealth(env, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/health/services`;
+    const { request, response, durationMs } = await httpJson('GET', url);
+    console.log(JSON.stringify({ command: 'service-health', request, response, durationMs }, null, 2));
+    logLine(`service-health ${response.status} url=${url}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdSeedCredits(env, userId, amount, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/add`;
+    const apiKeyHeaders = buildAuthHeaders(env, 'apikey');
+    const { request, response, durationMs } = await httpJson('POST', url, { userId, amount }, apiKeyHeaders);
+    console.log(JSON.stringify({ command: 'seed-credits', userId, amount, request, response, durationMs }, null, 2));
+    logLine(`seed-credits ${response.status} userId=${userId} amount=${amount}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdVendToken(env, userId, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/vend-token`;
+    // Need to create a user JWT token first for authentication
+    const userToken = await createUserToken(env, userId);
+    const { request, response, durationMs } = await httpJson('POST', url, {}, { 'Authorization': `Bearer ${userToken}` });
+    console.log(JSON.stringify({ command: 'vend-token', request, response, userId, durationMs }, null, 2));
+    logLine(`vend-token ${response.status} userId=${userId}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdValidate(env, token, exitOnComplete = true) {
+    // There is no public validate endpoint in simplified gateway; perform a protected TTT call to implicitly validate
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/ping`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
+    console.log(JSON.stringify({ command: 'validate', request, response, durationMs }, null, 2));
+    logLine(`validate ${response.status}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdBalance(env, userId, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/balance`;
+    // Need to create a user JWT token first for authentication
+    const userToken = await createUserToken(env, userId);
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${userToken}` });
+    console.log(JSON.stringify({ command: 'balance', userId, request, response, durationMs }, null, 2));
+    logLine(`balance ${response.status} userId=${userId}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdAddUser(env, userId, initialCredits, exitOnComplete = true) {
+    // For our implementation, we just add credits directly since users are created implicitly
+    await cmdSeedCredits(env, userId, initialCredits, exitOnComplete);
+}
+async function cmdAdminListUsers(env, exitOnComplete = true) {
+    console.log(JSON.stringify({ command: 'admin-list-users', message: 'Admin endpoints not implemented in this version' }, null, 2));
+    logLine(`admin-list-users not implemented`);
+    if (exitOnComplete)
+        process.exit(0);
+}
+async function cmdAdminListTransactions(env, exitOnComplete = true) {
+    console.log(JSON.stringify({ command: 'admin-list-transactions', message: 'Admin endpoints not implemented in this version' }, null, 2));
+    logLine(`admin-list-transactions not implemented`);
+    if (exitOnComplete)
+        process.exit(0);
+}
+async function cmdAdminApiKeys(env, action, arg, exitOnComplete = true) {
+    console.log(JSON.stringify({ command: 'admin-api-keys', action, message: 'Admin endpoints not implemented in this version' }, null, 2));
+    logLine(`admin-api-keys:${action} not implemented`);
+    if (exitOnComplete)
+        process.exit(0);
+}
+async function cmdUserTransactions(env, userId, exitOnComplete = true) {
+    console.log(JSON.stringify({ command: 'user-transactions', userId, message: 'User transaction endpoints not implemented in this version' }, null, 2));
+    logLine(`user-transactions not implemented userId=${userId}`);
+    if (exitOnComplete)
+        process.exit(0);
+}
+async function cmdTttTranscribe(env, token, payloadJson, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/transcribe`;
+    let payload = undefined;
+    try {
+        payload = payloadJson ? JSON.parse(payloadJson) : {};
+    }
+    catch {
+        payload = {};
+    }
+    const { request, response, durationMs } = await httpJson('POST', url, payload, { 'Authorization': `Bearer ${token}` });
+    console.log(JSON.stringify({ command: 'ttt-transcribe', request, response, durationMs }, null, 2));
+    logLine(`ttt-transcribe ${response.status}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+async function cmdTttStatus(env, token, id, exitOnComplete = true) {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/${encodeURIComponent(id)}`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
+    console.log(JSON.stringify({ command: 'ttt-status', request, response, durationMs }, null, 2));
+    logLine(`ttt-status ${response.status} id=${id}`);
+    if (exitOnComplete)
+        process.exit(response.ok ? 0 : 1);
+}
+// Interactive USSD-style menu
+async function runInteractiveMenu(env) {
+    const rl = await Promise.resolve().then(() => __importStar(require('readline')));
+    const reader = rl.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q) => new Promise(resolve => reader.question(q, resolve));
+    async function showHeader() {
+        const base = getBaseUrl(env);
+        const auth = detectAuth(env);
+        console.log('\nPluct CLI – Interactive Menu');
+        console.log('============================');
+        console.log(`Base URL: ${base}`);
+        console.log(`Auth: X-API-Key=${auth.apiKey ? 'yes' : 'no'}, AdminBearer=${auth.adminBearer ? 'yes' : 'no'}, WebhookSecret=${auth.webhookSecret ? 'yes' : 'no'}`);
+    }
+    async function monitoringMenu() {
+        console.log('\n5) Service Monitoring');
+        console.log('  1. Check service health');
+        console.log('  2. View service recommendations');
+        console.log('  3. Test TTT connectivity');
+        console.log('  0. Back');
+        const choice = (await ask('Choose: ')).trim();
+        if (choice === '1') {
+            await cmdServiceHealth(env, false);
+        }
+        else if (choice === '2') {
+            await cmdServiceHealth(env, false);
+        }
+        else if (choice === '3') {
+            const token = (await ask('JWT Token (optional): ')).trim();
+            if (token) {
+                await cmdTttTranscribe(env, token, '{"test": "connectivity"}', false);
+            }
+            else {
+                console.log('Skipping TTT test - no token provided');
+            }
+        }
+    }
+    async function usersMenu() {
+        console.log('\n1) Users');
+        console.log('  1. Create user');
+        console.log('  2. Show balance');
+        console.log('  3. Add credits');
+        console.log('  4. List all users');
+        console.log('  5. User transactions');
+        console.log('  0. Back');
+        const choice = (await ask('Choose: ')).trim();
+        if (choice === '1') {
+            const userId = (await ask('User ID: ')).trim();
+            const credits = Number((await ask('Initial credits (0): ')).trim() || '0');
+            await cmdAddUser(env, userId, credits, false);
+        }
+        else if (choice === '2') {
+            const userId = (await ask('User ID: ')).trim();
+            await cmdBalance(env, userId, false);
+        }
+        else if (choice === '3') {
+            const userId = (await ask('User ID: ')).trim();
+            const amount = Number((await ask('Amount: ')).trim());
+            await cmdSeedCredits(env, userId, amount, false);
+        }
+        else if (choice === '4') {
+            await cmdAdminListUsers(env, false);
+        }
+        else if (choice === '5') {
+            const userId = (await ask('User ID: ')).trim();
+            await cmdUserTransactions(env, userId, false);
+        }
+    }
+    async function tokensMenu() {
+        console.log('\n2) Tokens');
+        console.log('  1. Vend token');
+        console.log('  2. Validate token');
+        console.log('  3. TTT Transcribe (requires JWT)');
+        console.log('  4. TTT Status (requires JWT)');
+        console.log('  0. Back');
+        const choice = (await ask('Choose: ')).trim();
+        if (choice === '1') {
+            const userId = (await ask('User ID: ')).trim();
+            await cmdVendToken(env, userId, false);
+        }
+        else if (choice === '2') {
+            const token = (await ask('JWT: ')).trim();
+            await cmdValidate(env, token, false);
+        }
+        else if (choice === '3') {
+            const token = (await ask('JWT: ')).trim();
+            const payload = (await ask('Transcribe JSON payload ({}): ')).trim() || '{}';
+            await cmdTttTranscribe(env, token, payload, false);
+        }
+        else if (choice === '4') {
+            const token = (await ask('JWT: ')).trim();
+            const id = (await ask('Request ID: ')).trim();
+            await cmdTttStatus(env, token, id, false);
+        }
+    }
+    async function adminMenu() {
+        console.log('\n3) Admin');
+        console.log('  1. List users');
+        console.log('  2. List transactions');
+        console.log('  0. Back');
+        const choice = (await ask('Choose: ')).trim();
+        if (choice === '1') {
+            await cmdAdminListUsers(env);
+        }
+        else if (choice === '2') {
+            await cmdAdminListTransactions(env);
+        }
+    }
+    async function apiKeysMenu() {
+        console.log('\n4) API Keys');
+        console.log('  1. List keys');
+        console.log('  2. Create key');
+        console.log('  3. Revoke key');
+        console.log('  0. Back');
+        const choice = (await ask('Choose: ')).trim();
+        if (choice === '1') {
+            await cmdAdminApiKeys(env, 'list');
+        }
+        else if (choice === '2') {
+            const name = (await ask('Name (auto if empty): ')).trim();
+            await cmdAdminApiKeys(env, 'create', name || undefined);
+        }
+        else if (choice === '3') {
+            const id = (await ask('Key ID: ')).trim();
+            await cmdAdminApiKeys(env, 'revoke', id);
+        }
+    }
+    while (true) {
+        await showHeader();
+        console.log('\nMain Menu');
+        console.log('  1. Users');
+        console.log('  2. Tokens');
+        console.log('  3. Admin');
+        console.log('  4. API Keys');
+        console.log('  5. Service Monitoring');
+        console.log('  6. Status');
+        console.log('  0. Exit');
+        const choice = (await ask('Choose: ')).trim();
+        try {
+            if (choice === '1')
+                await usersMenu();
+            else if (choice === '2')
+                await tokensMenu();
+            else if (choice === '3')
+                await adminMenu();
+            else if (choice === '4')
+                await apiKeysMenu();
+            else if (choice === '5')
+                await monitoringMenu();
+            else if (choice === '6')
+                await cmdStatus(env, false);
+            else if (choice === '0') {
+                reader.close();
+                break;
+            }
+            else
+                console.log('Invalid choice');
+        }
+        catch (err) {
+            console.error('Error:', err);
+        }
+    }
+}
+async function main() {
+    const env = getEnv();
+    const [, , cmd, ...args] = process.argv;
+    if (!cmd || cmd === 'menu') {
+        await runInteractiveMenu(env);
+        return;
+    }
+    switch (cmd) {
+        case 'status':
+            await cmdStatus(env);
+            break;
+        case 'service-health':
+            await cmdServiceHealth(env);
+            break;
+        case 'seed-credits': {
+            const userId = args[0] || 'cli-' + Date.now();
+            const amount = Number(args[1] ?? '10');
+            await cmdSeedCredits(env, userId, amount);
+            break;
+        }
+        case 'add-user': {
+            const userId = args[0] || 'cli-' + Date.now();
+            const initialCredits = Number(args[1] ?? '0');
+            await cmdAddUser(env, userId, initialCredits);
+            break;
+        }
+        case 'vend-token': {
+            const userId = args[0] || 'cli-' + Date.now();
+            await cmdVendToken(env, userId);
+            break;
+        }
+        case 'balance': {
+            const userId = args[0] || 'cli-' + Date.now();
+            await cmdBalance(env, userId);
+            break;
+        }
+        case 'tokens': {
+            const userId = args[0] || 'cli-' + Date.now();
+            await cmdBalance(env, userId);
+            break;
+        }
+        case 'validate': {
+            const token = args[0];
+            if (!token) {
+                console.error('Usage: validate <jwt>');
+                process.exit(2);
+            }
+            await cmdValidate(env, token);
+            break;
+        }
+        case 'admin:list-users':
+            await cmdAdminListUsers(env);
+            break;
+        case 'admin:list-transactions':
+            await cmdAdminListTransactions(env);
+            break;
+        case 'admin:api-keys': {
+            const action = args[0];
+            const extra = args[1];
+            if (!action) {
+                console.error('Usage: admin:api-keys <list|create [name]|revoke <id>>');
+                process.exit(2);
+            }
+            await cmdAdminApiKeys(env, action, extra);
+            break;
+        }
+        case 'help':
+        default:
+            console.log(`Pluct CLI
+Usage:
+  npx ts-node cli/index.ts status
+  npx ts-node cli/index.ts service-health
+  npx ts-node cli/index.ts seed-credits <userId> <amount>
+  npx ts-node cli/index.ts add-user <userId> <initialCredits>
+  npx ts-node cli/index.ts vend-token <userId>
+  npx ts-node cli/index.ts balance <userId>
+  npx ts-node cli/index.ts tokens <userId>
+  npx ts-node cli/index.ts validate <jwt>
+  npx ts-node cli/index.ts admin:list-users
+  npx ts-node cli/index.ts admin:list-transactions
+  npx ts-node cli/index.ts admin:api-keys <list|create [name]|revoke <id>>
+
+Env resolution:
+  Reads .dev.vars at repo root; supports BASE_URL override.
+`);
+            process.exit(0);
+    }
+}
+main().catch(err => { console.error(err); logLine(`error ${String(err)}`); process.exit(1); });

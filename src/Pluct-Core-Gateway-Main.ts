@@ -268,7 +268,7 @@ class PluctGateway {
     // Health Check - Updated to match requirements
     this.app.get('/health', async c => {
       try {
-        const uptimeSeconds = Math.floor(process.uptime ? process.uptime() : 0);
+        const uptimeSeconds = Math.floor(Date.now() / 1000);
         
         // Check configuration status
         const configStatus = {
