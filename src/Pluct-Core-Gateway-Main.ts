@@ -361,6 +361,10 @@ class PluctGateway {
     this.app.notFound((c) => {
       const path = c.req.path;
       const method = c.req.method;
+      
+      // Dynamically discover available endpoints from the app routes
+      const availableEndpoints = this.getAvailableEndpoints();
+      
       return c.json({
         ok: false,
         code: 'NOT_FOUND',
@@ -368,13 +372,8 @@ class PluctGateway {
         details: {
           path,
           method,
-          availableEndpoints: {
-            health: ['GET /', 'GET /health', 'GET /health/services', 'GET /debug/config'],
-            auth: ['POST /v1/vend-token', 'GET /v1/credits/balance'],
-            proxy: ['POST /ttt/transcribe', 'GET /ttt/status/:id'],
-            metadata: ['GET /meta', 'POST /meta/resolve'],
-            admin: ['POST /v1/credits/add']
-          }
+          availableEndpoints,
+          suggestions: this.getEndpointSuggestions(path, availableEndpoints)
         },
         build: buildInfo(c.env),
         guidance: 'Check the available endpoints above. Ensure you\'re using the correct HTTP method and path.'
@@ -755,7 +754,7 @@ class PluctGateway {
       }
     });
     
-    // Metadata Resolution
+    // Metadata Resolution with TTTranscribe Integration
     this.app.post('/meta/resolve', async c => {
       try {
         const { url } = await c.req.json();
@@ -770,10 +769,46 @@ class PluctGateway {
             'Ensure the URL is from tiktok.com or vm.tiktok.com domain.');
         }
         
+        // Get metadata first
         const meta = await this.resolveMetadata(c.env, url);
+        
+        // Start transcription with TTTranscribe using the shared secret
+        let transcriptionResult = null;
+        try {
+          const transcriptionResponse = await this.callTTT(c.env, '/transcribe', {
+            method: 'POST',
+            body: JSON.stringify({ url }),
+            headers: { 'content-type': 'application/json' }
+          });
+          
+          if (transcriptionResponse.ok) {
+            transcriptionResult = await transcriptionResponse.json();
+          } else {
+            log('meta_resolve', 'transcription failed', { 
+              status: transcriptionResponse.status,
+              url 
+            });
+          }
+        } catch (transcriptionError) {
+          log('meta_resolve', 'transcription error', { 
+            error: (transcriptionError as Error).message,
+            url 
+          });
+        }
+        
         return c.json({
           ok: true,
-          data: meta,
+          data: {
+            metadata: meta,
+            transcription: transcriptionResult ? {
+              jobId: transcriptionResult.id || transcriptionResult.jobId,
+              status: transcriptionResult.status || 'started',
+              message: 'Transcription job initiated'
+            } : {
+              status: 'failed',
+              message: 'Transcription could not be started'
+            }
+          },
           build: buildInfo(c.env)
         });
       } catch (error) {
@@ -1010,6 +1045,62 @@ class PluctGateway {
     return meta;
   }
   
+  private getAvailableEndpoints() {
+    return {
+      health: [
+        { method: 'GET', path: '/', description: 'Root endpoint with configuration status' },
+        { method: 'GET', path: '/health', description: 'Health check with configuration details' },
+        { method: 'GET', path: '/health/services', description: 'Service health monitoring' },
+        { method: 'GET', path: '/debug/config', description: 'Detailed configuration diagnostics' }
+      ],
+      authentication: [
+        { method: 'POST', path: '/v1/vend-token', description: 'Vend short-lived access token (requires JWT auth)' },
+        { method: 'GET', path: '/v1/credits/balance', description: 'Get user credit balance (requires JWT auth)' }
+      ],
+      transcription: [
+        { method: 'POST', path: '/ttt/transcribe', description: 'Start transcription job (requires short-lived token)' },
+        { method: 'GET', path: '/ttt/status/:id', description: 'Check transcription status (requires short-lived token)' }
+      ],
+      metadata: [
+        { method: 'GET', path: '/meta', description: 'Get TikTok metadata with caching' },
+        { method: 'POST', path: '/meta/resolve', description: 'Resolve TikTok metadata and start transcription' }
+      ],
+      admin: [
+        { method: 'POST', path: '/v1/credits/add', description: 'Add credits to user account (requires admin API key)' }
+      ]
+    };
+  }
+
+  private getEndpointSuggestions(requestedPath: string, availableEndpoints: any) {
+    const suggestions: string[] = [];
+    const pathSegments = requestedPath.split('/').filter(Boolean);
+    
+    // Check for common typos and suggest corrections
+    for (const category of Object.values(availableEndpoints)) {
+      for (const endpoint of category as any[]) {
+        const endpointSegments = endpoint.path.split('/').filter(Boolean);
+        
+        // Check for similar paths
+        if (endpointSegments.length === pathSegments.length) {
+          let similarity = 0;
+          for (let i = 0; i < pathSegments.length; i++) {
+            if (endpointSegments[i] === pathSegments[i] || 
+                endpointSegments[i].includes(':') || 
+                pathSegments[i].includes(endpointSegments[i])) {
+              similarity++;
+            }
+          }
+          
+          if (similarity > 0 && similarity >= pathSegments.length * 0.5) {
+            suggestions.push(`${endpoint.method} ${endpoint.path} - ${endpoint.description}`);
+          }
+        }
+      }
+    }
+    
+    return suggestions.slice(0, 5); // Limit to 5 suggestions
+  }
+
   public getApp() {
     return this.app;
   }
