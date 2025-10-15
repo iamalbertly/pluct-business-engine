@@ -312,7 +312,7 @@ class PluctGateway {
   private setupMiddleware() {
     this.app.use('*', async (c, next) => {
       try {
-        // Allow diagnostics without blocking
+        // Allow diagnostics and metadata endpoints without blocking
         const path = c.req.path || '';
         const method = c.req.method || 'GET';
         const diagnosticsAllowed = (
@@ -321,6 +321,10 @@ class PluctGateway {
             path === '/health' ||
             path === '/health/services' ||
             path === '/debug/config'
+          )
+        ) || (
+          method === 'POST' && (
+            path === '/meta/resolve'
           )
         );
         if (!diagnosticsAllowed) {
@@ -352,6 +356,30 @@ class PluctGateway {
       allowMethods: ['POST', 'GET', 'OPTIONS'],
       maxAge: 86400
     }));
+
+    // 404 handler for better error responses
+    this.app.notFound((c) => {
+      const path = c.req.path;
+      const method = c.req.method;
+      return c.json({
+        ok: false,
+        code: 'NOT_FOUND',
+        message: `Endpoint not found: ${method} ${path}`,
+        details: {
+          path,
+          method,
+          availableEndpoints: {
+            health: ['GET /', 'GET /health', 'GET /health/services', 'GET /debug/config'],
+            auth: ['POST /v1/vend-token', 'GET /v1/credits/balance'],
+            proxy: ['POST /ttt/transcribe', 'GET /ttt/status/:id'],
+            metadata: ['GET /meta', 'POST /meta/resolve'],
+            admin: ['POST /v1/credits/add']
+          }
+        },
+        build: buildInfo(c.env),
+        guidance: 'Check the available endpoints above. Ensure you\'re using the correct HTTP method and path.'
+      }, 404);
+    });
   }
   
   private setupRoutes() {
@@ -731,15 +759,30 @@ class PluctGateway {
     this.app.post('/meta/resolve', async c => {
       try {
         const { url } = await c.req.json();
-        if (!url) return jsonError(c, 400, 'missing_url', 'URL is required', {},
-          'Send POST to /meta/resolve with JSON body: { "url": "https://tiktok.com/..." }');
+        if (!url) {
+          return jsonError(c, 400, 'missing_url', 'URL is required', {},
+            'Send POST to /meta/resolve with JSON body: { "url": "https://tiktok.com/..." }');
+        }
+        
+        // Validate TikTok URL
+        if (!this.isTikTokUrl(url)) {
+          return jsonError(c, 400, 'invalid_url', 'Only TikTok URLs are supported', { url },
+            'Ensure the URL is from tiktok.com or vm.tiktok.com domain.');
+        }
         
         const meta = await this.resolveMetadata(c.env, url);
-        return c.json(meta);
+        return c.json({
+          ok: true,
+          data: meta,
+          build: buildInfo(c.env)
+        });
       } catch (error) {
         log('meta_resolve', 'metadata resolution failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'metadata_resolution_failed', 'Metadata resolution failed', { error: (error as Error).message },
-          'Check URL format. Ensure it\'s a valid TikTok URL.');
+        return jsonError(c, 500, 'metadata_resolution_failed', 'Metadata resolution failed', { 
+          error: (error as Error).message,
+          url: c.req.json ? (await c.req.json()).url : 'unknown'
+        },
+          'Check URL format. Ensure it\'s a valid TikTok URL and the service is accessible.');
       }
     });
     
