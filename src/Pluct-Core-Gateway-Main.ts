@@ -11,6 +11,9 @@ interface Env {
   LOG_LEVEL?: string;
   MAX_RETRIES?: string;
   REQUEST_TIMEOUT?: string;
+  // Non-sensitive build metadata for diagnostics
+  BUILD_REF?: string;
+  BUILD_TIME?: string;
 }
 
 interface TokenPayload {
@@ -162,8 +165,68 @@ function jsonError(c: any, status: number, code: string, message: string, detail
     code, 
     message, 
     details: details || {},
+    build: buildInfo(c.env as any),
     guidance: guidance || null
   }, status);
+}
+
+function buildInfo(env: Env) {
+  return {
+    // Intentionally not exposing VCS naming; caller asked not to use "gitid"
+    ref: env.BUILD_REF || null,
+    deployedAt: env.BUILD_TIME || null
+  };
+}
+
+function getConfigurationDiagnostics(env: Env) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const configStatus = {
+    ENGINE_JWT_SECRET: !!env.ENGINE_JWT_SECRET,
+    ENGINE_ADMIN_KEY: !!env.ENGINE_ADMIN_KEY,
+    TTT_SHARED_SECRET: !!env.TTT_SHARED_SECRET,
+    TTT_BASE: !!env.TTT_BASE,
+    KV_USERS: !!env.KV_USERS
+  };
+
+  const requiredSecrets = [
+    { key: 'ENGINE_JWT_SECRET', description: 'JWT signing secret for user tokens' },
+    { key: 'ENGINE_ADMIN_KEY', description: 'Admin API key for credit management' },
+    { key: 'TTT_SHARED_SECRET', description: 'Shared secret for TTTranscribe communication' }
+  ];
+
+  for (const secret of requiredSecrets) {
+    const value = (env as any)[secret.key];
+    if (!value) {
+      errors.push(`Missing ${secret.key}: ${secret.description}`);
+    } else if (typeof value === 'string' && value.length < 16) {
+      warnings.push(`${secret.key} is too short (${value.length} chars). Recommended: 32+ characters`);
+    }
+  }
+
+  if (!env.TTT_BASE) {
+    errors.push('Missing TTT_BASE: TTTranscribe service URL');
+  } else {
+    try {
+      const url = new URL(env.TTT_BASE);
+      if (url.protocol !== 'https:') {
+        warnings.push('TTT_BASE should use HTTPS protocol');
+      }
+    } catch {
+      errors.push(`Invalid TTT_BASE URL: ${env.TTT_BASE}`);
+    }
+  }
+
+  if (!env.KV_USERS) {
+    errors.push('Missing KV_USERS: KV namespace binding not configured');
+  }
+
+  const missing = Object.entries(configStatus)
+    .filter(([_, configured]) => !configured)
+    .map(([key]) => key);
+
+  return { errors, warnings, configStatus, missing };
 }
 
 async function checkRateLimit(env: Env, key: string): Promise<boolean> {
@@ -249,9 +312,36 @@ class PluctGateway {
   private setupMiddleware() {
     this.app.use('*', async (c, next) => {
       try {
-        validateEnvironment(c.env);
+        // Allow diagnostics without blocking
+        const path = c.req.path || '';
+        const method = c.req.method || 'GET';
+        const diagnosticsAllowed = (
+          method === 'GET' && (
+            path === '/' ||
+            path === '/health' ||
+            path === '/health/services' ||
+            path === '/debug/config'
+          )
+        );
+        if (!diagnosticsAllowed) {
+          validateEnvironment(c.env);
+        }
       } catch (error) {
-        return c.json({ error: 'configuration_error' }, 500);
+        const diag = getConfigurationDiagnostics(c.env);
+        const message = (error as Error)?.message || 'Configuration validation failed';
+        return c.json({
+          ok: false,
+          code: 'configuration_error',
+          message,
+          details: {
+            errors: diag.errors,
+            warnings: diag.warnings,
+            configuration: diag.configStatus,
+            missing: diag.missing
+          },
+          build: buildInfo(c.env),
+          guidance: 'Set required secrets and vars. See /debug/config for instructions.'
+        }, 500);
       }
       await next();
     });
@@ -265,36 +355,52 @@ class PluctGateway {
   }
   
   private setupRoutes() {
+    // Root - human-friendly configuration + build reference
+    this.app.get('/', async c => {
+      const uptimeSeconds = Math.floor(Date.now() / 1000);
+      const diag = getConfigurationDiagnostics(c.env);
+      const allConfigured = Object.values(diag.configStatus).every(Boolean);
+      return c.json({
+        status: allConfigured ? 'ok' : 'configuration_error',
+        message: allConfigured ? 'Pluct Business Engine is running' : 'Configuration issues detected',
+        uptimeSeconds,
+        version: '1.0.0',
+        build: buildInfo(c.env),
+        configuration: diag.configStatus,
+        issues: allConfigured ? [] : diag.missing,
+        warnings: diag.warnings,
+        links: {
+          health: '/health',
+          serviceHealth: '/health/services',
+          config: '/debug/config'
+        }
+      });
+    });
+
     // Health Check - Updated to match requirements
     this.app.get('/health', async c => {
       try {
         const uptimeSeconds = Math.floor(Date.now() / 1000);
         
         // Check configuration status
-        const configStatus = {
-          ENGINE_JWT_SECRET: !!c.env.ENGINE_JWT_SECRET,
-          ENGINE_ADMIN_KEY: !!c.env.ENGINE_ADMIN_KEY,
-          TTT_SHARED_SECRET: !!c.env.TTT_SHARED_SECRET,
-          TTT_BASE: !!c.env.TTT_BASE,
-          KV_USERS: !!c.env.KV_USERS
-        };
-        
-        const allConfigured = Object.values(configStatus).every(Boolean);
+        const diag = getConfigurationDiagnostics(c.env);
+        const allConfigured = Object.values(diag.configStatus).every(Boolean);
         
         return c.json({
           status: allConfigured ? 'ok' : 'configuration_error',
           uptimeSeconds,
           version: '1.0.0',
-          configuration: configStatus,
-          issues: allConfigured ? [] : Object.entries(configStatus)
-            .filter(([_, configured]) => !configured)
-            .map(([key, _]) => `Missing ${key}`)
+          build: buildInfo(c.env),
+          configuration: diag.configStatus,
+          issues: allConfigured ? [] : diag.missing.map(k => `Missing ${k}`),
+          warnings: diag.warnings
         });
       } catch (error) {
         return c.json({ 
           status: 'error', 
           message: 'Health check failed',
-          error: (error as Error).message 
+          error: (error as Error).message,
+          build: buildInfo(c.env)
         }, 500);
       }
     });
@@ -313,17 +419,20 @@ class PluctGateway {
           KV_USERS: c.env.KV_USERS ? 'Configured' : 'Missing',
           LOG_LEVEL: c.env.LOG_LEVEL || 'info (default)',
           MAX_RETRIES: c.env.MAX_RETRIES || '3 (default)',
-          REQUEST_TIMEOUT: c.env.REQUEST_TIMEOUT || '30000 (default)'
+          REQUEST_TIMEOUT: c.env.REQUEST_TIMEOUT || '30000 (default)',
+          BUILD_REF: c.env.BUILD_REF ? `Present (${(c.env.BUILD_REF || '').length} chars)` : 'Missing (optional)',
+          BUILD_TIME: c.env.BUILD_TIME || 'Missing (optional)'
         };
         
         const missing = Object.entries(config)
-          .filter(([_, value]) => value === 'Missing')
-          .map(([key, _]) => key);
+          .filter(([key, value]) => value === 'Missing' && key !== 'BUILD_REF' && key !== 'BUILD_TIME')
+          .map(([key]) => key);
         
         return c.json({
           status: missing.length === 0 ? 'ok' : 'configuration_error',
           configuration: config,
           missing: missing,
+          build: buildInfo(c.env),
           instructions: missing.length > 0 ? {
             ENGINE_JWT_SECRET: 'Run: wrangler secret put ENGINE_JWT_SECRET',
             ENGINE_ADMIN_KEY: 'Run: wrangler secret put ENGINE_ADMIN_KEY', 
@@ -336,7 +445,8 @@ class PluctGateway {
         return c.json({ 
           status: 'error', 
           message: 'Configuration debug failed',
-          error: (error as Error).message 
+          error: (error as Error).message,
+          build: buildInfo(c.env)
         }, 500);
       }
     });
