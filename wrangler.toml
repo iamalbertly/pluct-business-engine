@@ -10,9 +10,10 @@ REQUEST_TIMEOUT = "30000"            # Request timeout in milliseconds
 
 [[kv_namespaces]]
 binding = "KV_USERS"
-id = "your-kv-namespace-id"
+id = "1897ec2df7a84145b59ed35d2a641d51"
 
 # Add secrets at deploy time (do not hardcode)
 # wrangler secret put ENGINE_JWT_SECRET
 # wrangler secret put ENGINE_ADMIN_KEY
 # wrangler secret put TTT_SHARED_SECRET
+
