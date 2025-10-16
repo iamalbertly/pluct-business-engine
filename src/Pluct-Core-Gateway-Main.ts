@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
 import { SignJWT, jwtVerify } from 'jose';
 import { cors } from 'hono/cors';
+import { z } from 'zod';
+import { zValidator } from '@hono/zod-validator';
 
 interface Env {
   KV_USERS: any;
+  DB: D1Database;
   ENGINE_JWT_SECRET: string;
   ENGINE_ADMIN_KEY: string;
   TTT_SHARED_SECRET: string;
@@ -36,6 +39,109 @@ interface CircuitBreakerState {
   failureCount: number;
   lastFailureTime: number;
   successCount: number;
+}
+
+// Validation schemas
+const VendTokenSchema = z.object({
+  userId: z.string().min(1, 'User ID is required'),
+  clientRequestId: z.string().optional(),
+  scope: z.string().optional()
+});
+
+const TranscribeSchema = z.object({
+  url: z.string().url('Valid URL is required').refine(
+    (url) => {
+      try {
+        const urlObj = new URL(url);
+        return urlObj.hostname.includes('tiktok.com') || urlObj.hostname.includes('vm.tiktok.com');
+      } catch {
+        return false;
+      }
+    },
+    'Only TikTok URLs are supported'
+  ),
+  file: z.string().optional()
+}).refine(
+  (data) => data.url || data.file,
+  'Either URL or file must be provided'
+);
+
+const MetaResolveSchema = z.object({
+  url: z.string().url('Valid URL is required').refine(
+    (url) => {
+      try {
+        const urlObj = new URL(url);
+        return urlObj.hostname.includes('tiktok.com') || urlObj.hostname.includes('vm.tiktok.com');
+      } catch {
+        return false;
+      }
+    },
+    'Only TikTok URLs are supported'
+  )
+});
+
+const AddCreditsSchema = z.object({
+  userId: z.string().min(1, 'User ID is required'),
+  amount: z.number().int().positive('Amount must be a positive integer')
+});
+
+const MetaQuerySchema = z.object({
+  url: z.string().url('Valid URL is required').refine(
+    (url) => {
+      try {
+        const urlObj = new URL(url);
+        return urlObj.hostname.includes('tiktok.com') || urlObj.hostname.includes('vm.tiktok.com');
+      } catch {
+        return false;
+      }
+    },
+    'Only TikTok URLs are supported'
+  )
+});
+
+// Database initialization
+async function initializeDatabase(env: Env): Promise<void> {
+  try {
+    // Create credits table
+    await env.DB.exec(`
+      CREATE TABLE IF NOT EXISTS credits (
+        user_id TEXT PRIMARY KEY,
+        balance INTEGER NOT NULL DEFAULT 0,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create audits table
+    await env.DB.exec(`
+      CREATE TABLE IF NOT EXISTS audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        route TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        credit_delta INTEGER NOT NULL,
+        balance_after INTEGER NOT NULL,
+        ip TEXT,
+        user_agent TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create indices for better query performance
+    await env.DB.exec(`
+      CREATE INDEX IF NOT EXISTS idx_audits_user_id_created_at ON audits(user_id, created_at)
+    `);
+    
+    await env.DB.exec(`
+      CREATE INDEX IF NOT EXISTS idx_audits_request_id ON audits(request_id)
+    `);
+    
+    log('database', 'Database initialized successfully');
+  } catch (error) {
+    log('database', 'Database initialization failed', { error: (error as Error).message });
+    throw error;
+  }
 }
 
 // Utilities
@@ -229,17 +335,17 @@ function getConfigurationDiagnostics(env: Env) {
   return { errors, warnings, configStatus, missing };
 }
 
-async function checkRateLimit(env: Env, key: string): Promise<boolean> {
+async function checkRateLimit(env: Env, key: string, limit: number = 100, windowSeconds: number = 60): Promise<boolean> {
   try {
     const rateLimitKey = `rate_limit:${key}`;
     const current = await env.KV_USERS.get(rateLimitKey);
     if (!current) {
-      await env.KV_USERS.put(rateLimitKey, '1', { expirationTtl: 60 });
+      await env.KV_USERS.put(rateLimitKey, '1', { expirationTtl: windowSeconds });
       return true;
     }
     const count = parseInt(current, 10);
-    if (count >= 100) return false;
-    await env.KV_USERS.put(rateLimitKey, String(count + 1), { expirationTtl: 60 });
+    if (count >= limit) return false;
+    await env.KV_USERS.put(rateLimitKey, String(count + 1), { expirationTtl: windowSeconds });
     return true;
   } catch (error) {
     // If rate limiting fails, allow the request to proceed
@@ -247,6 +353,13 @@ async function checkRateLimit(env: Env, key: string): Promise<boolean> {
     log('rate_limit', 'Rate limiting check failed, allowing request', { error: (error as Error).message, key });
     return true;
   }
+}
+
+async function checkRateLimitPerUserAndIP(env: Env, userId: string, ip: string): Promise<boolean> {
+  const userLimit = await checkRateLimit(env, `user:${userId}`, 50, 60); // 50 requests per minute per user
+  const ipLimit = await checkRateLimit(env, `ip:${ip}`, 200, 60); // 200 requests per minute per IP
+  
+  return userLimit && ipLimit;
 }
 
 function validateEnvironment(env: Env): void {
@@ -309,6 +422,10 @@ class PluctGateway {
     this.setupRoutes();
   }
   
+  async initialize(env: Env): Promise<void> {
+    await initializeDatabase(env);
+  }
+  
   private setupMiddleware() {
     this.app.use('*', async (c, next) => {
       try {
@@ -351,33 +468,77 @@ class PluctGateway {
     });
 
     this.app.use('*', cors({
-      origin: '*',
-      allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-      allowMethods: ['POST', 'GET', 'OPTIONS'],
-      maxAge: 86400
+      origin: ['https://pluct.app', 'https://www.pluct.app', 'http://localhost:3000', 'http://localhost:8080'],
+      allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Client-Request-Id'],
+      allowMethods: ['POST', 'GET', 'OPTIONS', 'PUT', 'DELETE'],
+      maxAge: 86400,
+      credentials: true
     }));
+
+    // Method validation middleware
+    this.app.use('*', async (c, next) => {
+      const method = c.req.method;
+      const path = c.req.path;
+      
+      // Define allowed methods for each route
+      const routeMethods: Record<string, string[]> = {
+        '/': ['GET'],
+        '/health': ['GET'],
+        '/health/services': ['GET'],
+        '/debug/config': ['GET'],
+        '/v1/credits/balance': ['GET'],
+        '/v1/vend-token': ['POST'],
+        '/v1/credits/add': ['POST'],
+        '/ttt/transcribe': ['POST'],
+        '/ttt/status': ['GET'],
+        '/meta': ['GET'],
+        '/meta/resolve': ['POST']
+      };
+      
+      // Find matching route
+      let allowedMethods: string[] = [];
+      for (const [route, methods] of Object.entries(routeMethods)) {
+        if (path === route || (route.includes(':') && path.startsWith(route.split(':')[0]))) {
+          allowedMethods = methods;
+          break;
+        }
+      }
+      
+      // If we found allowed methods and current method is not allowed
+      if (allowedMethods.length > 0 && !allowedMethods.includes(method)) {
+        return c.json({
+          ok: false,
+          code: 'method_not_allowed',
+          message: `Method ${method} not allowed for ${path}`,
+          details: {
+            allowedMethods,
+            currentMethod: method,
+            path
+          }
+        }, 405, {
+          'Allow': allowedMethods.join(', ')
+        });
+      }
+      
+      await next();
+    });
 
     // 404 handler for better error responses
     this.app.notFound((c) => {
-      const path = c.req.path;
-      const method = c.req.method;
-      
-      // Dynamically discover available endpoints from the app routes
-      const availableEndpoints = this.getAvailableEndpoints();
-      
       return c.json({
         ok: false,
-        code: 'NOT_FOUND',
-        message: `Endpoint not found: ${method} ${path}`,
-        details: {
-          path,
-          method,
-          availableEndpoints,
-          suggestions: this.getEndpointSuggestions(path, availableEndpoints)
-        },
-        build: buildInfo(c.env),
-        guidance: 'Check the available endpoints above. Ensure you\'re using the correct HTTP method and path.'
+        code: 'route_not_found',
+        message: 'Endpoint not found'
       }, 404);
+    });
+
+    // Error handler for thrown errors only
+    this.app.onError((err, c) => {
+      // Keep framework 404s out of here
+      const status = (err as any)?.status ?? 500;
+      const code = (err as any)?.code ?? 'internal_error';
+      const msg = (err as any)?.message ?? 'Unexpected error';
+      return c.json({ ok: false, code, message: msg }, status);
     });
   }
   
@@ -404,7 +565,7 @@ class PluctGateway {
       });
     });
 
-    // Health Check - Updated to match requirements
+    // Health Check - Enhanced with connectivity checks
     this.app.get('/health', async c => {
       try {
         const uptimeSeconds = Math.floor(Date.now() / 1000);
@@ -413,12 +574,40 @@ class PluctGateway {
         const diag = getConfigurationDiagnostics(c.env);
         const allConfigured = Object.values(diag.configStatus).every(Boolean);
         
+        // Check D1 connectivity
+        let d1Status = 'unknown';
+        try {
+          await c.env.DB.prepare('SELECT 1').first();
+          d1Status = 'connected';
+        } catch (error) {
+          d1Status = 'error';
+          log('health', 'D1 connectivity check failed', { error: (error as Error).message });
+        }
+        
+        // Check KV connectivity
+        let kvStatus = 'unknown';
+        try {
+          await c.env.KV_USERS.get('health-check');
+          kvStatus = 'connected';
+        } catch (error) {
+          kvStatus = 'error';
+          log('health', 'KV connectivity check failed', { error: (error as Error).message });
+        }
+        
+        // Get available routes
+        const availableRoutes = this.getAvailableEndpoints();
+        
         return c.json({
-          status: allConfigured ? 'ok' : 'configuration_error',
+          status: allConfigured && d1Status === 'connected' && kvStatus === 'connected' ? 'ok' : 'degraded',
           uptimeSeconds,
           version: '1.0.0',
           build: buildInfo(c.env),
           configuration: diag.configStatus,
+          connectivity: {
+            d1: d1Status,
+            kv: kvStatus
+          },
+          routes: availableRoutes,
           issues: allConfigured ? [] : diag.missing.map(k => `Missing ${k}`),
           warnings: diag.warnings
         });
@@ -539,7 +728,7 @@ class PluctGateway {
     });
     
     // Token Vending - Updated to /v1/vend-token with JWT auth and atomic credit deduction
-    this.app.post('/v1/vend-token', async c => {
+    this.app.post('/v1/vend-token', zValidator('json', VendTokenSchema), async c => {
       const startTime = Date.now();
       let userId: string = 'unknown';
       let requestId: string = '';
@@ -561,43 +750,44 @@ class PluctGateway {
           return c.json({ error: 'INSUFFICIENT_SCOPE', message: 'Required scope: ttt:transcribe' }, 403);
         }
         
-        // Check for idempotency
+        // Rate limiting check
+        const ip = c.req.header('CF-Connecting-IP') || 'unknown';
+        const rateLimitOk = await checkRateLimitPerUserAndIP(c.env, userId, ip);
+        if (!rateLimitOk) {
+          return c.json({ error: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests' }, 429);
+        }
+        
+        // Check for idempotency - improved implementation
         clientRequestId = c.req.header('X-Client-Request-Id');
         if (clientRequestId) {
-          const existingResponse = await c.env.KV_USERS.get(`vendId:${userId}:${clientRequestId}`);
+          const idempotencyKey = `idempotency:${userId}:${clientRequestId}`;
+          const existingResponse = await c.env.KV_USERS.get(idempotencyKey);
           if (existingResponse) {
-            return c.json(JSON.parse(existingResponse));
+            const parsedResponse = JSON.parse(existingResponse);
+            log('vend-token', 'idempotency hit', { userId, clientRequestId, requestId: parsedResponse.requestId });
+            return c.json(parsedResponse);
           }
+          
+          // Store idempotency key immediately to prevent race conditions
+          await c.env.KV_USERS.put(idempotencyKey, 'processing', { expirationTtl: 900 });
         }
         
         requestId = crypto.randomUUID();
         
-        // Atomic credit deduction with KV compare-and-swap
-        const creditKey = `credits:${userId}`;
-        const currentCredits = await c.env.KV_USERS.get(creditKey);
-        const balance = currentCredits ? parseInt(currentCredits, 10) : 0;
+        // Atomic credit deduction using D1
+        const creditResult = await this.spendCreditAtomic(
+          c.env, 
+          userId, 
+          requestId, 
+          '/v1/vend-token',
+          c.req.header('CF-Connecting-IP'),
+          c.req.header('User-Agent')
+        );
         
-        if (balance <= 0) {
-          // Audit log for insufficient credits
-          const auditKey = `audit:${userId}:${new Date().toISOString()}:${requestId}`;
-          const auditData = {
-            action: 'vend-token',
-            delta: 0,
-            balanceAfter: balance,
-            requestId,
-            ip: c.req.header('CF-Connecting-IP') || 'unknown',
-            ua: c.req.header('User-Agent') || 'unknown',
-            timestamp: new Date().toISOString()
-          };
-          await c.env.KV_USERS.put(auditKey, JSON.stringify(auditData));
-          
-          log('vend-token', 'insufficient credits', { userId, balance, requestId, ms: Date.now() - startTime });
-          return c.json({ error: 'INSUFFICIENT_CREDITS', balance }, 402);
+        if (!creditResult.success) {
+          log('vend-token', 'insufficient credits', { userId, balance: creditResult.balanceAfter, requestId, ms: Date.now() - startTime });
+          return c.json({ error: 'INSUFFICIENT_CREDITS', balance: creditResult.balanceAfter }, 402);
         }
-        
-        // Atomic credit deduction - write new balance
-        const newBalance = balance - 1;
-        await c.env.KV_USERS.put(creditKey, String(newBalance));
         
         // Generate short-lived token (15 minutes max)
         const now = Math.floor(Date.now() / 1000);
@@ -615,29 +805,17 @@ class PluctGateway {
           token: jwt,
           scope: 'ttt:transcribe',
           expiresAt,
-          balanceAfter: newBalance,
+          balanceAfter: creditResult.balanceAfter,
           requestId
         };
         
         // Store response for idempotency if client request ID provided
         if (clientRequestId) {
-          await c.env.KV_USERS.put(`vendId:${userId}:${clientRequestId}`, JSON.stringify(response), { expirationTtl: 900 });
+          const idempotencyKey = `idempotency:${userId}:${clientRequestId}`;
+          await c.env.KV_USERS.put(idempotencyKey, JSON.stringify(response), { expirationTtl: 900 });
         }
         
-        // Audit log for successful vend
-        const auditKey = `audit:${userId}:${new Date().toISOString()}:${requestId}`;
-        const auditData = {
-          action: 'vend-token',
-          delta: -1,
-          balanceAfter: newBalance,
-          requestId,
-          ip: c.req.header('CF-Connecting-IP') || 'unknown',
-          ua: c.req.header('User-Agent') || 'unknown',
-          timestamp: new Date().toISOString()
-        };
-        await c.env.KV_USERS.put(auditKey, JSON.stringify(auditData));
-        
-        log('vend-token', 'success', { userId, balanceAfter: newBalance, requestId, ms: Date.now() - startTime });
+        log('vend-token', 'success', { userId, balanceAfter: creditResult.balanceAfter, requestId, ms: Date.now() - startTime });
         return c.json(response);
         
       } catch (error) {
@@ -647,7 +825,7 @@ class PluctGateway {
     });
     
     // TTTranscribe Proxy - Updated to match exact requirements
-    this.app.post('/ttt/transcribe', async c => {
+    this.app.post('/ttt/transcribe', zValidator('json', TranscribeSchema), async c => {
       try {
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
@@ -657,13 +835,7 @@ class PluctGateway {
         const token = auth.slice(7);
         const payload = await this.verifyToken(c.env, token);
         
-        const body = await c.req.text();
-        const bodyJson = JSON.parse(body);
-        
-        // Validate URL is TikTok
-        if (bodyJson.url && !this.isTikTokUrl(bodyJson.url)) {
-          return jsonError(c, 400, 'INVALID_URL', 'Invalid URL provided');
-        }
+        const bodyJson = c.req.valid('json');
         
         // Use circuit breaker for TTT calls
         const response = await this.circuitBreaker.execute(async () => {
@@ -721,16 +893,9 @@ class PluctGateway {
     });
     
     // Metadata endpoint with randomized TTL caching
-    this.app.get('/meta', async c => {
+    this.app.get('/meta', zValidator('query', MetaQuerySchema), async c => {
       try {
-        const url = c.req.query('url');
-        if (!url) {
-          return jsonError(c, 400, 'MISSING_URL', 'URL parameter is required');
-        }
-        
-        if (!this.isTikTokUrl(url)) {
-          return jsonError(c, 400, 'INVALID_URL', 'Only TikTok URLs are supported');
-        }
+        const { url } = c.req.valid('query');
         
         const cacheKey = `meta:${url}`;
         const cached = await c.env.KV_USERS.get(cacheKey);
@@ -755,19 +920,9 @@ class PluctGateway {
     });
     
     // Metadata Resolution with TTTranscribe Integration
-    this.app.post('/meta/resolve', async c => {
+    this.app.post('/meta/resolve', zValidator('json', MetaResolveSchema), async c => {
       try {
-        const { url } = await c.req.json();
-        if (!url) {
-          return jsonError(c, 400, 'missing_url', 'URL is required', {},
-            'Send POST to /meta/resolve with JSON body: { "url": "https://tiktok.com/..." }');
-        }
-        
-        // Validate TikTok URL
-        if (!this.isTikTokUrl(url)) {
-          return jsonError(c, 400, 'invalid_url', 'Only TikTok URLs are supported', { url },
-            'Ensure the URL is from tiktok.com or vm.tiktok.com domain.');
-        }
+        const { url } = c.req.valid('json');
         
         // Get metadata first
         const meta = await this.resolveMetadata(c.env, url);
@@ -822,17 +977,13 @@ class PluctGateway {
     });
     
     // Admin Credit Addition
-    this.app.post('/v1/credits/add', async c => {
+    this.app.post('/v1/credits/add', zValidator('json', AddCreditsSchema), async c => {
       try {
         const apiKey = c.req.header('X-API-Key');
         if (apiKey !== c.env.ENGINE_ADMIN_KEY) return jsonError(c, 401, 'unauthorized', 'Invalid admin API key', {},
           'Include header: X-API-Key: <admin-key>. Get key from environment configuration.');
         
-        const { userId, amount } = await c.req.json();
-        if (!userId || typeof amount !== 'number') {
-          return jsonError(c, 400, 'invalid_request', 'userId and numeric amount are required', { userId, amount },
-            'Send POST to /v1/credits/add with JSON body: { "userId": "string", "amount": number } and X-API-Key header.');
-        }
+        const { userId, amount } = c.req.valid('json');
         await this.addCredits(c.env, userId, amount);
         
         log('credits', 'credits added', { userId, amount });
@@ -845,21 +996,65 @@ class PluctGateway {
     });
   }
   
-  // Core Methods
+  // Core Methods - Updated to use D1 with atomic transactions
   private async getCredits(env: Env, userId: string): Promise<number> {
-    const v = await env.KV_USERS.get(`credits:${userId}`);
-    return parseInt(v || '0', 10);
+    try {
+      const result = await env.DB.prepare('SELECT balance FROM credits WHERE user_id = ?').bind(userId).first();
+      return result ? (result.balance as number) : 0;
+    } catch (error) {
+      log('credits', 'Failed to get credits from D1, falling back to KV', { error: (error as Error).message, userId });
+      const v = await env.KV_USERS.get(`credits:${userId}`);
+      return parseInt(v || '0', 10);
+    }
   }
   
   private async addCredits(env: Env, userId: string, amount: number): Promise<void> {
-    const cur = await this.getCredits(env, userId);
-    await env.KV_USERS.put(`credits:${userId}`, String(cur + amount));
+    try {
+      await env.DB.prepare(`
+        INSERT INTO credits (user_id, balance) 
+        VALUES (?, ?) 
+        ON CONFLICT(user_id) DO UPDATE SET 
+          balance = balance + ?, 
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(userId, amount, amount).run();
+    } catch (error) {
+      log('credits', 'Failed to add credits in D1, falling back to KV', { error: (error as Error).message, userId, amount });
+      const cur = await this.getCredits(env, userId);
+      await env.KV_USERS.put(`credits:${userId}`, String(cur + amount));
+    }
   }
   
-  private async spendCredit(env: Env, userId: string): Promise<void> {
-    const cur = await this.getCredits(env, userId);
-    if (cur <= 0) throw new Error('insufficient_credits');
-    await env.KV_USERS.put(`credits:${userId}`, String(cur - 1));
+  private async spendCreditAtomic(env: Env, userId: string, requestId: string, route: string, ip?: string, userAgent?: string): Promise<{ success: boolean; balanceAfter: number }> {
+    try {
+      // Use D1 transaction for atomic credit deduction
+      const result = await env.DB.batch([
+        env.DB.prepare('SELECT balance FROM credits WHERE user_id = ? FOR UPDATE').bind(userId),
+        env.DB.prepare(`
+          UPDATE credits 
+          SET balance = balance - 1, updated_at = CURRENT_TIMESTAMP 
+          WHERE user_id = ? AND balance > 0
+        `).bind(userId),
+        env.DB.prepare(`
+          INSERT INTO audits (user_id, request_id, action, route, status, credit_delta, balance_after, ip, user_agent)
+          VALUES (?, ?, 'vend-token', ?, 200, -1, (SELECT balance FROM credits WHERE user_id = ?), ?, ?)
+        `).bind(userId, requestId, route, userId, ip || 'unknown', userAgent || 'unknown')
+      ]);
+      
+      const balanceResult = await env.DB.prepare('SELECT balance FROM credits WHERE user_id = ?').bind(userId).first();
+      const balanceAfter = balanceResult ? (balanceResult.balance as number) : 0;
+      
+      return { success: balanceAfter >= 0, balanceAfter };
+    } catch (error) {
+      log('credits', 'Atomic credit deduction failed, falling back to KV', { error: (error as Error).message, userId });
+      // Fallback to KV
+      const cur = await this.getCredits(env, userId);
+      if (cur <= 0) {
+        return { success: false, balanceAfter: cur };
+      }
+      const newBalance = cur - 1;
+      await env.KV_USERS.put(`credits:${userId}`, String(newBalance));
+      return { success: true, balanceAfter: newBalance };
+    }
   }
   
   
