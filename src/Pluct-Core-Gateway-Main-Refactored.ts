@@ -212,6 +212,8 @@ export class PluctGateway {
   
   constructor() {
     this.app = new Hono<{ Bindings: Env }>();
+    // Initialize with dummy env to prevent undefined errors
+    this.metadataResolver = new PluctMetadataResolver({} as any);
     this.setupMiddleware();
     this.setupRoutes();
   }
@@ -224,6 +226,7 @@ export class PluctGateway {
     this.circuitBreaker = new PluctCircuitBreaker();
     this.healthMonitor = new PluctHealthMonitor(env);
     this.tttProxy = new PluctTTTranscribeProxy(env);
+    // Reinitialize with real env
     this.metadataResolver = new PluctMetadataResolver(env);
     
     try {
@@ -586,6 +589,14 @@ export class PluctGateway {
       try {
         const { url } = c.req.valid('query');
         
+        // Check if KV_USERS is available
+        if (!c.env.KV_USERS) {
+          log('meta', 'KV_USERS not available, fetching without cache');
+          // Fetch metadata directly without caching
+          const metadata = await this.metadataResolver.fetchTikTokMetadata(url);
+          return c.json(metadata);
+        }
+        
         const cacheKey = `meta:${url}`;
         const cached = await c.env.KV_USERS.get(cacheKey);
         if (cached) {
@@ -674,6 +685,34 @@ export class PluctGateway {
   private setupProtectedV1Routes(router: Hono<{ Bindings: Env }>) {
     // Credits Balance
     router.get('/credits/balance', async c => {
+      try {
+        // Extract and verify JWT authentication
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+        }
+        
+        const token = auth.slice(7);
+        const payload = await this.authValidator.verifyToken(token, false);
+        const userId = payload.sub;
+        
+        // Get current balance
+        const balance = await this.creditsManager.getCredits(userId);
+        
+        return c.json({
+          userId,
+          balance,
+          updatedAt: new Date().toISOString()
+        });
+        
+      } catch (error) {
+        log('balance', 'balance check failed', { error: (error as Error).message });
+        return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
+      }
+    });
+
+    // Legacy Android compatibility endpoint
+    router.post('/user/balance', async c => {
       try {
         // Extract and verify JWT authentication
         const auth = c.req.header('Authorization');

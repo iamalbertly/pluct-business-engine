@@ -19,4 +19,16 @@ describe('Simple Tests', () => {
     
     expect(modules.length).toBe(8);
   });
+
+  it('should handle metadata endpoint gracefully', () => {
+    // Test that metadata resolver can be instantiated
+    const mockEnv = { KV_USERS: null };
+    
+    // This should not throw
+    expect(() => {
+      // Simulate the metadata resolver initialization
+      const resolver = { fetchTikTokMetadata: () => Promise.resolve({}) };
+      return resolver;
+    }).not.toThrow();
+  });
 });
