@@ -1,5 +1,5 @@
 name = "pluct-business-engine"
-main = "src/Pluct-Core-Gateway-Main.ts"
+main = "src/index.ts"
 compatibility_date = "2024-10-01"
 
 [vars]
