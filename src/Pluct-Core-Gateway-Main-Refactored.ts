@@ -23,6 +23,20 @@ interface Env {
   REQUEST_TIMEOUT?: string;
   BUILD_REF?: string;
   BUILD_TIME?: string;
+  // Legacy aliases
+  JWT_SECRET?: string;
+  ADMIN_SECRET?: string;
+  ENGINE_SHARED_SECRET?: string;
+  ADMIN_API_KEY?: string;
+}
+
+type EffectiveConfig = {
+  ENGINE_JWT_SECRET?: string;
+  ENGINE_ADMIN_KEY?: string;
+  TTT_SHARED_SECRET?: string;
+  TTT_BASE?: string;
+  KV_USERS?: any;
+  DB?: D1Database;
 }
 
 // Validation schemas
@@ -83,6 +97,27 @@ const MetaQuerySchema = z.object({
   )
 });
 
+// Environment resolution helper
+function pickFirst(env: any, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = env[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+function resolveConfig(env: any): EffectiveConfig {
+  return {
+    // Accept legacy names so your current Cloudflare secrets keep working:
+    ENGINE_JWT_SECRET: pickFirst(env, ['ENGINE_JWT_SECRET', 'JWT_SECRET', 'ENGINE_SHARED_SECRET']),
+    ENGINE_ADMIN_KEY:  pickFirst(env, ['ENGINE_ADMIN_KEY', 'ADMIN_SECRET', 'ADMIN_API_KEY']),
+    TTT_SHARED_SECRET: pickFirst(env, ['TTT_SHARED_SECRET', 'ENGINE_SHARED_SECRET']),
+    TTT_BASE:          pickFirst(env, ['TTT_BASE']),
+    KV_USERS:          env.KV_USERS,
+    DB:                env.DB
+  };
+}
+
 // Utilities
 function log(stage: string, message: string, metadata?: any) {
   console.log(`be:${stage} msg=${message}${metadata ? ` metadata=${JSON.stringify(metadata)}` : ''}`);
@@ -106,101 +141,61 @@ function buildInfo(env: Env) {
   };
 }
 
-function getConfigurationDiagnostics(env: Env) {
+function getConfigurationDiagnostics(env: any) {
+  const cfg = resolveConfig(env);
+  
+  const configStatus = {
+    ENGINE_JWT_SECRET: !!cfg.ENGINE_JWT_SECRET,
+    ENGINE_ADMIN_KEY:  !!cfg.ENGINE_ADMIN_KEY,
+    TTT_SHARED_SECRET: !!cfg.TTT_SHARED_SECRET,
+    TTT_BASE:          !!cfg.TTT_BASE,
+    KV_USERS:          !!cfg.KV_USERS
+  };
+
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const configStatus = {
-    ENGINE_JWT_SECRET: !!env.ENGINE_JWT_SECRET,
-    ENGINE_ADMIN_KEY: !!env.ENGINE_ADMIN_KEY,
-    TTT_SHARED_SECRET: !!env.TTT_SHARED_SECRET,
-    TTT_BASE: !!env.TTT_BASE,
-    KV_USERS: !!env.KV_USERS
-  };
+  if (!cfg.ENGINE_JWT_SECRET) errors.push('Missing ENGINE_JWT_SECRET (or JWT_SECRET/ENGINE_SHARED_SECRET)');
+  if (!cfg.ENGINE_ADMIN_KEY)  errors.push('Missing ENGINE_ADMIN_KEY (or ADMIN_SECRET/ADMIN_API_KEY)');
+  if (!cfg.TTT_SHARED_SECRET) errors.push('Missing TTT_SHARED_SECRET (or ENGINE_SHARED_SECRET)');
+  if (!cfg.TTT_BASE)          errors.push('Missing TTT_BASE');
+  if (!cfg.KV_USERS)          errors.push('Missing KV_USERS');
 
-  const requiredSecrets = [
-    { key: 'ENGINE_JWT_SECRET', description: 'JWT signing secret for user tokens' },
-    { key: 'ENGINE_ADMIN_KEY', description: 'Admin API key for credit management' },
-    { key: 'TTT_SHARED_SECRET', description: 'Shared secret for TTTranscribe communication' }
-  ];
-
-  for (const secret of requiredSecrets) {
-    const value = (env as any)[secret.key];
-    if (!value) {
-      errors.push(`Missing ${secret.key}: ${secret.description}`);
-    } else if (typeof value === 'string' && value.length < 16) {
-      warnings.push(`${secret.key} is too short (${value.length} chars). Recommended: 32+ characters`);
-    }
+  // Add warnings for short secrets
+  if (cfg.ENGINE_JWT_SECRET && cfg.ENGINE_JWT_SECRET.length < 16) {
+    warnings.push(`ENGINE_JWT_SECRET is too short (${cfg.ENGINE_JWT_SECRET.length} chars). Recommended: 32+ characters`);
+  }
+  if (cfg.ENGINE_ADMIN_KEY && cfg.ENGINE_ADMIN_KEY.length < 16) {
+    warnings.push(`ENGINE_ADMIN_KEY is too short (${cfg.ENGINE_ADMIN_KEY.length} chars). Recommended: 32+ characters`);
+  }
+  if (cfg.TTT_SHARED_SECRET && cfg.TTT_SHARED_SECRET.length < 16) {
+    warnings.push(`TTT_SHARED_SECRET is too short (${cfg.TTT_SHARED_SECRET.length} chars). Recommended: 32+ characters`);
   }
 
-  if (!env.TTT_BASE) {
-    errors.push('Missing TTT_BASE: TTTranscribe service URL');
-  } else {
+  if (cfg.TTT_BASE) {
     try {
-      const url = new URL(env.TTT_BASE);
+      const url = new URL(cfg.TTT_BASE);
       if (url.protocol !== 'https:') {
         warnings.push('TTT_BASE should use HTTPS protocol');
       }
     } catch {
-      errors.push(`Invalid TTT_BASE URL: ${env.TTT_BASE}`);
+      errors.push(`Invalid TTT_BASE URL: ${cfg.TTT_BASE}`);
     }
   }
 
-  if (!env.KV_USERS) {
-    errors.push('Missing KV_USERS: KV namespace binding not configured');
-  }
-
-  const missing = Object.entries(configStatus)
-    .filter(([_, configured]) => !configured)
-    .map(([key]) => key);
-
+  const missing = Object.entries(configStatus).filter(([_, ok]) => !ok).map(([k]) => k);
   return { errors, warnings, configStatus, missing };
 }
 
-function validateEnvironment(env: Env): void {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  
-  // Check required secrets
-  const requiredSecrets = [
-    { key: 'ENGINE_JWT_SECRET', description: 'JWT signing secret for user tokens' },
-    { key: 'ENGINE_ADMIN_KEY', description: 'Admin API key for credit management' },
-    { key: 'TTT_SHARED_SECRET', description: 'Shared secret for TTTranscribe communication' }
-  ];
-  
-  for (const secret of requiredSecrets) {
-    const value = env[secret.key as keyof Env];
-    if (!value) {
-      errors.push(`Missing ${secret.key}: ${secret.description}`);
-    } else if (value.length < 16) {
-      warnings.push(`${secret.key} is too short (${value.length} chars). Recommended: 32+ characters`);
-    }
-  }
-  
-  // Check TTT_BASE URL
-  if (!env.TTT_BASE) {
-    errors.push('Missing TTT_BASE: TTTranscribe service URL');
-  } else {
-    try {
-      const url = new URL(env.TTT_BASE);
-      if (url.protocol !== 'https:') {
-        warnings.push('TTT_BASE should use HTTPS protocol');
-      }
-    } catch (e) {
-      errors.push(`Invalid TTT_BASE URL: ${env.TTT_BASE}`);
-    }
-  }
-  
-  // Check KV namespace
-  if (!env.KV_USERS) {
-    errors.push('Missing KV_USERS: KV namespace binding not configured');
-  }
-  
-  // Throw error if any critical issues found
-  if (errors.length > 0) {
-    const errorMessage = `Configuration validation failed: ${errors.length} error(s), ${warnings.length} warning(s)`;
-    const details = [...errors, ...warnings].join('; ');
-    throw new Error(`${errorMessage}. Details: ${details}`);
+function validateEnvironment(env: any): void {
+  const { errors, warnings } = getConfigurationDiagnostics(env);
+  if (errors.length) {
+    throw Object.assign(
+      new Error(
+        `Configuration validation failed: ${errors.length} error(s), ${warnings.length} warning(s). Details: ${errors.join('; ')}`
+      ),
+      { code: 'configuration_error', status: 500 }
+    );
   }
 }
 
@@ -239,45 +234,7 @@ export class PluctGateway {
   }
   
   private setupMiddleware() {
-    this.app.use('*', async (c, next) => {
-      try {
-        // Allow diagnostics and metadata endpoints without blocking
-        const path = c.req.path || '';
-        const method = c.req.method || 'GET';
-        const diagnosticsAllowed = (
-          method === 'GET' && (
-            path === '/' ||
-            path === '/health' ||
-            path === '/health/services' ||
-            path === '/debug/config'
-          )
-        ) || (
-          method === 'POST' && (
-            path === '/meta/resolve'
-          )
-        );
-        if (!diagnosticsAllowed) {
-          validateEnvironment(c.env);
-        }
-      } catch (error) {
-        const diag = getConfigurationDiagnostics(c.env);
-        const message = (error as Error)?.message || 'Configuration validation failed';
-        return c.json({
-          ok: false,
-          code: 'configuration_error',
-          message,
-          details: {
-            errors: diag.errors,
-            warnings: diag.warnings,
-            configuration: diag.configStatus,
-            missing: diag.missing
-          },
-          build: buildInfo(c.env),
-          guidance: 'Set required secrets and vars. See /debug/config for instructions.'
-        }, 500);
-      }
-      await next();
-    });
+    // Global middleware - only CORS and logging, no validation
 
     this.app.use('*', cors({
       origin: ['https://pluct.app', 'https://www.pluct.app', 'http://localhost:3000', 'http://localhost:8080'],
@@ -355,6 +312,43 @@ export class PluctGateway {
   }
   
   private setupRoutes() {
+    // Create protected route groups with validation
+    const protectedV1 = new Hono<{ Bindings: Env }>();
+    const protectedTTT = new Hono<{ Bindings: Env }>();
+    const protectedMeta = new Hono<{ Bindings: Env }>();
+
+    // Add validation middleware to protected routes
+    const requireConfig = async (c: any, next: any) => { 
+      validateEnvironment(c.env); 
+      await next(); 
+    };
+
+    protectedV1.use('*', requireConfig);
+    protectedTTT.use('*', requireConfig);
+    protectedMeta.use('*', requireConfig);
+
+    // Public routes (no validation)
+    this.setupPublicRoutes();
+    
+    // Protected routes
+    this.setupProtectedV1Routes(protectedV1);
+    this.setupProtectedTTTRoutes(protectedTTT);
+    this.setupProtectedMetaRoutes(protectedMeta);
+
+    // Mount protected route groups
+    this.app.route('/v1', protectedV1);
+    this.app.route('/ttt', protectedTTT);
+    this.app.route('/meta', protectedMeta);
+
+    // 404 handler
+    this.app.notFound(c => c.json({ 
+      ok: false, 
+      code: 'route_not_found', 
+      message: 'Endpoint not found' 
+    }, 404));
+  }
+
+  private setupPublicRoutes() {
     // Root - human-friendly configuration + build reference
     this.app.get('/', async c => {
       const uptimeSeconds = Math.floor(Date.now() / 1000);
@@ -379,133 +373,86 @@ export class PluctGateway {
 
     // Health Check - Enhanced with connectivity checks
     this.app.get('/health', async c => {
+      const uptimeSeconds = Math.floor(Date.now() / 1000);
+      
+      // Check configuration status using resolved config
+      const diag = getConfigurationDiagnostics(c.env);
+      const allConfigured = Object.values(diag.configStatus).every(Boolean);
+      
+      // Check D1 connectivity
+      let d1Status = 'unknown';
       try {
-        const uptimeSeconds = Math.floor(Date.now() / 1000);
-        
-        // Check configuration status
-        const diag = getConfigurationDiagnostics(c.env);
-        const allConfigured = Object.values(diag.configStatus).every(Boolean);
-        
-        // Check D1 connectivity
-        let d1Status = 'unknown';
-        try {
-          await c.env.DB.prepare('SELECT 1').first();
-          d1Status = 'connected';
-        } catch (error) {
-          d1Status = 'error';
-          log('health', 'D1 connectivity check failed', { error: (error as Error).message });
-        }
-        
-        // Check KV connectivity
-        let kvStatus = 'unknown';
-        try {
-          await c.env.KV_USERS.get('health-check');
-          kvStatus = 'connected';
-        } catch (error) {
-          kvStatus = 'error';
-          log('health', 'KV connectivity check failed', { error: (error as Error).message });
-        }
-        
-        // Get available routes
-        const availableRoutes = this.getAvailableEndpoints();
-        
-        return c.json({
-          status: allConfigured && d1Status === 'connected' && kvStatus === 'connected' ? 'ok' : 'degraded',
-          uptimeSeconds,
-          version: '1.0.0',
-          build: buildInfo(c.env),
-          configuration: diag.configStatus,
-          connectivity: {
-            d1: d1Status,
-            kv: kvStatus
-          },
-          routes: availableRoutes,
-          issues: allConfigured ? [] : diag.missing.map(k => `Missing ${k}`),
-          warnings: diag.warnings
-        });
+        await c.env.DB.prepare('SELECT 1').first();
+        d1Status = 'connected';
       } catch (error) {
-        return c.json({ 
-          status: 'error', 
-          message: 'Health check failed',
-          error: (error as Error).message,
-          build: buildInfo(c.env)
-        }, 500);
+        d1Status = 'error';
+        log('health', 'D1 connectivity check failed', { error: (error as Error).message });
       }
+      
+      // Check KV connectivity
+      let kvStatus = 'unknown';
+      try {
+        await c.env.KV_USERS.get('health-check');
+        kvStatus = 'connected';
+      } catch (error) {
+        kvStatus = 'error';
+        log('health', 'KV connectivity check failed', { error: (error as Error).message });
+      }
+      
+      // Get available routes
+      const availableRoutes = this.getAvailableEndpoints();
+      
+      return c.json({
+        status: allConfigured && d1Status === 'connected' && kvStatus === 'connected' ? 'ok' : 'degraded',
+        uptimeSeconds,
+        version: '1.0.0',
+        build: buildInfo(c.env),
+        configuration: diag.configStatus,
+        connectivity: {
+          d1: d1Status,
+          kv: kvStatus
+        },
+        routes: availableRoutes,
+        issues: allConfigured ? [] : diag.missing.map(k => `Missing ${k}`),
+        warnings: diag.warnings
+      }, 200);
     });
     
     // Configuration Debug Endpoint
     this.app.get('/debug/config', async c => {
-      try {
-        const config = {
-          ENGINE_JWT_SECRET: c.env.ENGINE_JWT_SECRET ? 
-            `Configured (${c.env.ENGINE_JWT_SECRET.length} chars)` : 'Missing',
-          ENGINE_ADMIN_KEY: c.env.ENGINE_ADMIN_KEY ? 
-            `Configured (${c.env.ENGINE_ADMIN_KEY.length} chars)` : 'Missing',
-          TTT_SHARED_SECRET: c.env.TTT_SHARED_SECRET ? 
-            `Configured (${c.env.TTT_SHARED_SECRET.length} chars)` : 'Missing',
-          TTT_BASE: c.env.TTT_BASE || 'Missing',
-          KV_USERS: c.env.KV_USERS ? 'Configured' : 'Missing',
-          LOG_LEVEL: c.env.LOG_LEVEL || 'info (default)',
-          MAX_RETRIES: c.env.MAX_RETRIES || '3 (default)',
-          REQUEST_TIMEOUT: c.env.REQUEST_TIMEOUT || '30000 (default)',
-          BUILD_REF: c.env.BUILD_REF ? `Present (${(c.env.BUILD_REF || '').length} chars)` : 'Missing (optional)',
-          BUILD_TIME: c.env.BUILD_TIME || 'Missing (optional)'
-        };
-        
-        const missing = Object.entries(config)
-          .filter(([key, value]) => value === 'Missing' && key !== 'BUILD_REF' && key !== 'BUILD_TIME')
-          .map(([key]) => key);
-        
-        return c.json({
-          status: missing.length === 0 ? 'ok' : 'configuration_error',
-          configuration: config,
-          missing: missing,
-          build: buildInfo(c.env),
-          instructions: missing.length > 0 ? {
-            ENGINE_JWT_SECRET: 'Run: wrangler secret put ENGINE_JWT_SECRET',
-            ENGINE_ADMIN_KEY: 'Run: wrangler secret put ENGINE_ADMIN_KEY', 
-            TTT_SHARED_SECRET: 'Run: wrangler secret put TTT_SHARED_SECRET',
-            TTT_BASE: 'Check wrangler.toml [vars] section',
-            KV_USERS: 'Check wrangler.toml [[kv_namespaces]] section'
-          } : {}
-        });
-      } catch (error) {
-        return c.json({ 
-          status: 'error', 
-          message: 'Configuration debug failed',
-          error: (error as Error).message,
-          build: buildInfo(c.env)
-        }, 500);
-      }
+      const cfg = resolveConfig(c.env);
+      const config = {
+        ENGINE_JWT_SECRET: cfg.ENGINE_JWT_SECRET ? `Configured (${cfg.ENGINE_JWT_SECRET.length} chars)` : 'Missing',
+        ENGINE_ADMIN_KEY:  cfg.ENGINE_ADMIN_KEY  ? `Configured (${cfg.ENGINE_ADMIN_KEY.length} chars)`  : 'Missing',
+        TTT_SHARED_SECRET: cfg.TTT_SHARED_SECRET ? `Configured (${cfg.TTT_SHARED_SECRET.length} chars)` : 'Missing',
+        TTT_BASE:          cfg.TTT_BASE || 'Missing',
+        KV_USERS:          cfg.KV_USERS ? 'Configured' : 'Missing',
+        LOG_LEVEL: c.env.LOG_LEVEL || 'info (default)',
+        MAX_RETRIES: c.env.MAX_RETRIES || '3 (default)',
+        REQUEST_TIMEOUT: c.env.REQUEST_TIMEOUT || '30000 (default)',
+        BUILD_REF: c.env.BUILD_REF ? `Present (${(c.env.BUILD_REF || '').length} chars)` : 'Missing (optional)',
+        BUILD_TIME: c.env.BUILD_TIME || 'Missing (optional)'
+      };
+      
+      const missing = Object.entries(config)
+        .filter(([key, value]) => value === 'Missing' && key !== 'BUILD_REF' && key !== 'BUILD_TIME')
+        .map(([key]) => key);
+      
+      return c.json({
+        status: missing.length === 0 ? 'ok' : 'configuration_error',
+        configuration: config,
+        missing: missing,
+        build: buildInfo(c.env),
+        instructions: missing.length > 0 ? {
+          ENGINE_JWT_SECRET: 'Run: wrangler secret put ENGINE_JWT_SECRET (or JWT_SECRET/ENGINE_SHARED_SECRET)',
+          ENGINE_ADMIN_KEY: 'Run: wrangler secret put ENGINE_ADMIN_KEY (or ADMIN_SECRET/ADMIN_API_KEY)', 
+          TTT_SHARED_SECRET: 'Run: wrangler secret put TTT_SHARED_SECRET (or ENGINE_SHARED_SECRET)',
+          TTT_BASE: 'Check wrangler.toml [vars] section',
+          KV_USERS: 'Check wrangler.toml [[kv_namespaces]] section'
+        } : {}
+      });
     });
     
-    // Credits Balance
-    this.app.get('/v1/credits/balance', async c => {
-      try {
-        // Extract and verify JWT authentication
-        const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
-        }
-        
-        const token = auth.slice(7);
-        const payload = await this.authValidator.verifyToken(token, false);
-        const userId = payload.sub;
-        
-        // Get current balance
-        const balance = await this.creditsManager.getCredits(userId);
-        
-        return c.json({
-          userId,
-          balance,
-          updatedAt: new Date().toISOString()
-        });
-        
-      } catch (error) {
-        log('balance', 'balance check failed', { error: (error as Error).message });
-        return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
-      }
-    });
     
     // Service Health Monitoring
     this.app.get('/health/services', async c => {
@@ -633,73 +580,6 @@ export class PluctGateway {
       }
     });
     
-    // TTTranscribe Proxy - Updated to match exact requirements
-    this.app.post('/ttt/transcribe', zValidator('json', TranscribeSchema), async c => {
-      try {
-        const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
-        }
-        
-        const token = auth.slice(7);
-        const payload = await this.authValidator.verifyToken(token);
-        
-        const bodyJson = c.req.valid('json');
-        
-        // Use circuit breaker for TTT calls
-        const response = await this.circuitBreaker.execute(async () => {
-          return await this.tttProxy.callTTT('/transcribe', {
-            method: 'POST',
-            body: JSON.stringify(bodyJson),
-            headers: { 'content-type': 'application/json' }
-          });
-        });
-        
-        log('ttt_proxy', `call=transcribe http=${response.status}`, { userId: payload.sub });
-        return new Response(response.body, { status: response.status, headers: response.headers });
-      } catch (error) {
-        log('ttt_proxy', 'transcribe request failed', { error: (error as Error).message });
-        
-        // Check if it's a circuit breaker error
-        if ((error as Error).message.includes('Circuit breaker is open')) {
-          return c.json({ error: 'SERVICE_UNAVAILABLE', message: 'TTTranscribe service is temporarily unavailable' }, 503);
-        }
-        
-        return c.json({ error: 'PROXY_FAILED', message: 'TTTranscribe proxy call failed' }, 500);
-      }
-    });
-    
-    // Status Check - Updated to match exact requirements
-    this.app.get('/ttt/status/:id', async c => {
-      try {
-        const auth = c.req.header('Authorization');
-        if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
-        }
-        
-        const token = auth.slice(7);
-        await this.authValidator.verifyToken(token);
-        
-        const requestId = c.req.param('id');
-        
-        // Use circuit breaker for TTT calls
-        const response = await this.circuitBreaker.execute(async () => {
-          return await this.tttProxy.callTTT(`/status/${requestId}`, { method: 'GET' });
-        });
-        
-        log('ttt_proxy', `call=status http=${response.status}`, { requestId });
-        return new Response(response.body, { status: response.status, headers: response.headers });
-      } catch (error) {
-        log('ttt_proxy', 'status check failed', { error: (error as Error).message });
-        
-        // Check if it's a circuit breaker error
-        if ((error as Error).message.includes('Circuit breaker is open')) {
-          return c.json({ error: 'SERVICE_UNAVAILABLE', message: 'TTTranscribe service is temporarily unavailable' }, 503);
-        }
-        
-        return c.json({ error: 'STATUS_CHECK_FAILED', message: 'TTTranscribe status check failed' }, 500);
-      }
-    });
     
     // Metadata endpoint with randomized TTL caching
     this.app.get('/meta', zValidator('query', MetaQuerySchema), async c => {
@@ -728,81 +608,7 @@ export class PluctGateway {
       }
     });
     
-    // Metadata Resolution with TTTranscribe Integration
-    this.app.post('/meta/resolve', zValidator('json', MetaResolveSchema), async c => {
-      try {
-        const { url } = c.req.valid('json');
-        
-        // Get metadata first
-        const meta = await this.metadataResolver.resolveMetadata(url);
-        
-        // Start transcription with TTTranscribe using the shared secret
-        let transcriptionResult = null;
-        try {
-          const transcriptionResponse = await this.tttProxy.callTTT('/transcribe', {
-            method: 'POST',
-            body: JSON.stringify({ url }),
-            headers: { 'content-type': 'application/json' }
-          });
-          
-          if (transcriptionResponse.ok) {
-            transcriptionResult = await transcriptionResponse.json();
-          } else {
-            log('meta_resolve', 'transcription failed', { 
-              status: transcriptionResponse.status,
-              url 
-            });
-          }
-        } catch (transcriptionError) {
-          log('meta_resolve', 'transcription error', { 
-            error: (transcriptionError as Error).message,
-            url 
-          });
-        }
-        
-        return c.json({
-          ok: true,
-          data: {
-            metadata: meta,
-            transcription: transcriptionResult ? {
-              jobId: transcriptionResult.id || transcriptionResult.jobId,
-              status: transcriptionResult.status || 'started',
-              message: 'Transcription job initiated'
-            } : {
-              status: 'failed',
-              message: 'Transcription could not be started'
-            }
-          },
-          build: buildInfo(c.env)
-        });
-      } catch (error) {
-        log('meta_resolve', 'metadata resolution failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'metadata_resolution_failed', 'Metadata resolution failed', { 
-          error: (error as Error).message,
-          url: c.req.json ? (await c.req.json()).url : 'unknown'
-        },
-          'Check URL format. Ensure it\'s a valid TikTok URL and the service is accessible.');
-      }
-    });
     
-    // Admin Credit Addition
-    this.app.post('/v1/credits/add', zValidator('json', AddCreditsSchema), async c => {
-      try {
-        const apiKey = c.req.header('X-API-Key');
-        if (apiKey !== c.env.ENGINE_ADMIN_KEY) return jsonError(c, 401, 'unauthorized', 'Invalid admin API key', {},
-          'Include header: X-API-Key: <admin-key>. Get key from environment configuration.');
-        
-        const { userId, amount } = c.req.valid('json');
-        await this.creditsManager.addCredits(userId, amount);
-        
-        log('credits', 'credits added', { userId, amount });
-        return c.json({ ok: true, userId, amount });
-      } catch (error) {
-        log('credits', 'credit addition failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'credits_add_failed', 'Failed to add credits', { error: (error as Error).message },
-          'Check server logs. Ensure KV_USERS is accessible and user exists.');
-      }
-    });
   }
   
   private getServiceRecommendations(tttHealth: any, circuitState: any): string[] {
@@ -863,6 +669,236 @@ export class PluctGateway {
         { method: 'POST', path: '/v1/credits/add', description: 'Add credits to user account (requires admin API key)' }
       ]
     };
+  }
+
+  private setupProtectedV1Routes(router: Hono<{ Bindings: Env }>) {
+    // Credits Balance
+    router.get('/credits/balance', async c => {
+      try {
+        // Extract and verify JWT authentication
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+        }
+        
+        const token = auth.slice(7);
+        const payload = await this.authValidator.verifyToken(token, false);
+        const userId = payload.sub;
+        
+        // Get current balance
+        const balance = await this.creditsManager.getCredits(userId);
+        
+        return c.json({
+          userId,
+          balance,
+          updatedAt: new Date().toISOString()
+        });
+        
+      } catch (error) {
+        log('balance', 'balance check failed', { error: (error as Error).message });
+        return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
+      }
+    });
+
+    // Token Vending - Updated to /v1/vend-token with JWT auth and atomic credit deduction
+    router.post('/vend-token', zValidator('json', VendTokenSchema), async c => {
+      const startTime = Date.now();
+      let userId: string = 'unknown';
+      let requestId: string = '';
+      let clientRequestId: string | undefined;
+      
+      try {
+        // Extract and verify JWT authentication
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+        }
+        
+        const token = auth.slice(7);
+        const payload = await this.authValidator.verifyToken(token, false);
+        userId = payload.sub;
+        
+        // Get request data
+        const { clientRequestId: reqId } = await c.req.json();
+        clientRequestId = reqId;
+        requestId = clientRequestId || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Check rate limiting
+        const ip = c.req.header('CF-Connecting-IP') || 'unknown';
+        const canProceed = await this.rateLimiter.checkRateLimitPerUserAndIP(userId, ip);
+        if (!canProceed) {
+          return jsonError(c, 429, 'RATE_LIMIT_EXCEEDED', 'Too many requests');
+        }
+        
+        // Check idempotency
+        const idempotencyKey = `idempotency:${userId}:${requestId}`;
+        const existingResponse = await c.env.KV_USERS.get(idempotencyKey);
+        if (existingResponse) {
+          const cached = JSON.parse(existingResponse);
+          if (cached.status === 'processing') {
+            return jsonError(c, 409, 'REQUEST_IN_PROGRESS', 'Request is already being processed');
+          }
+          return c.json(cached.response);
+        }
+        
+        // Mark as processing
+        await c.env.KV_USERS.put(idempotencyKey, JSON.stringify({ status: 'processing' }), { expirationTtl: 900 });
+        
+        // Atomic credit deduction
+        const creditResult = await this.creditsManager.spendCreditAtomic(userId, requestId, '/v1/vend-token', ip, c.req.header('User-Agent'));
+        if (!creditResult.success) {
+          return jsonError(c, 402, 'INSUFFICIENT_CREDITS', 'Insufficient credits', { balance: creditResult.balanceAfter });
+        }
+        
+        // Generate short-lived token
+        const shortLivedToken = await this.authValidator.generateShortLivedToken({
+          sub: userId,
+          scope: 'ttt:transcribe',
+          iat: Math.floor(Date.now() / 1000),
+          exp: Math.floor(Date.now() / 1000) + 900 // 15 minutes
+        });
+        
+        const response = {
+          token: shortLivedToken,
+          expiresIn: 900,
+          balanceAfter: creditResult.balanceAfter,
+          requestId
+        };
+        
+        // Cache successful response
+        await c.env.KV_USERS.put(idempotencyKey, JSON.stringify({ 
+          status: 'completed', 
+          response 
+        }), { expirationTtl: 900 });
+        
+        const duration = Date.now() - startTime;
+        log('vend_token', 'token vended successfully', { userId, requestId, duration, balanceAfter: creditResult.balanceAfter });
+        
+        return c.json(response);
+        
+      } catch (error) {
+        log('vend_token', 'token vending failed', { error: (error as Error).message, userId, requestId });
+        
+        if ((error as any)?.code === 'invalid_token') {
+          return jsonError(c, 401, 'INVALID_TOKEN', 'Invalid or expired token');
+        }
+        
+        return jsonError(c, 500, 'TOKEN_VENDING_FAILED', 'Token vending failed');
+      }
+    });
+
+    // Add Credits (Admin)
+    router.post('/credits/add', zValidator('json', AddCreditsSchema), async c => {
+      try {
+        const adminKey = c.req.header('X-API-Key');
+        if (adminKey !== c.env.ENGINE_ADMIN_KEY) {
+          return jsonError(c, 403, 'INVALID_ADMIN_KEY', 'Invalid admin API key');
+        }
+        
+        const { userId, amount } = await c.req.json();
+        await this.creditsManager.addCredits(userId, amount);
+        
+        return c.json({ 
+          message: 'Credits added successfully', 
+          userId, 
+          amount,
+          timestamp: new Date().toISOString()
+        });
+        
+      } catch (error) {
+        log('add_credits', 'credit addition failed', { error: (error as Error).message });
+        return jsonError(c, 500, 'CREDIT_ADDITION_FAILED', 'Failed to add credits');
+      }
+    });
+  }
+
+  private setupProtectedTTTRoutes(router: Hono<{ Bindings: Env }>) {
+    // TTTranscribe Proxy - Transcription
+    router.post('/transcribe', zValidator('json', TranscribeSchema), async c => {
+      try {
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+        }
+        
+        const token = auth.slice(7);
+        const payload = await this.authValidator.verifyToken(token, true);
+        
+        const { url } = await c.req.json();
+        
+        // Use circuit breaker for resilience
+        const result = await this.circuitBreaker.execute(async () => {
+          return await this.tttProxy.callTTT('/transcribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          });
+        });
+        
+        if (!result.ok) {
+          return jsonError(c, result.status, 'TTT_SERVICE_ERROR', 'TTTranscribe service error');
+        }
+        
+        const data = await result.json();
+        return c.json(data);
+        
+      } catch (error) {
+        log('transcribe', 'transcription failed', { error: (error as Error).message });
+        return jsonError(c, 500, 'TRANSCRIPTION_FAILED', 'Transcription failed');
+      }
+    });
+
+    // TTTranscribe Proxy - Status Check
+    router.get('/status/:id', async c => {
+      try {
+        const auth = c.req.header('Authorization');
+        if (!auth?.startsWith('Bearer ')) {
+          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+        }
+        
+        const token = auth.slice(7);
+        await this.authValidator.verifyToken(token, true);
+        
+        const id = c.req.param('id');
+        
+        const result = await this.circuitBreaker.execute(async () => {
+          return await this.tttProxy.callTTT(`/status/${id}`, { method: 'GET' });
+        });
+        
+        if (!result.ok) {
+          return jsonError(c, result.status, 'TTT_SERVICE_ERROR', 'TTTranscribe service error');
+        }
+        
+        const data = await result.json();
+        return c.json(data);
+        
+      } catch (error) {
+        log('status', 'status check failed', { error: (error as Error).message });
+        return jsonError(c, 500, 'STATUS_CHECK_FAILED', 'Status check failed');
+      }
+    });
+  }
+
+  private setupProtectedMetaRoutes(router: Hono<{ Bindings: Env }>) {
+    // Metadata Resolution
+    router.post('/resolve', zValidator('json', MetaResolveSchema), async c => {
+      try {
+        const { url } = await c.req.json();
+        
+        const metadata = await this.metadataResolver.resolveMetadata(url);
+        
+        return c.json({
+          url,
+          metadata,
+          cached: false,
+          timestamp: new Date().toISOString()
+        });
+        
+      } catch (error) {
+        log('meta_resolve', 'metadata resolution failed', { error: (error as Error).message });
+        return jsonError(c, 500, 'METADATA_RESOLUTION_FAILED', 'Metadata resolution failed');
+      }
+    });
   }
 
   public getApp() {
