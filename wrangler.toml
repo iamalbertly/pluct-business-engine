@@ -15,7 +15,7 @@ id = "1897ec2df7a84145b59ed35d2a641d51"
 [[d1_databases]]
 binding = "DB"
 database_name = "pluct-business-engine"
-database_id = "pluct-business-engine-db"
+database_id = ""
 
 # Add secrets at deploy time (do not hardcode)
 # wrangler secret put ENGINE_JWT_SECRET

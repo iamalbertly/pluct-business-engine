@@ -10,24 +10,9 @@
 		"test": "vitest",
 		"test:coverage": "vitest --coverage",
 		"test:gateway": "powershell -ExecutionPolicy Bypass -File .\\Pluct-Test-Gateway-Validation.ps1",
-		"test:health": "powershell -ExecutionPolicy Bypass -File .\\Pluct-Test-Health-Monitoring.ps1",
-		"deploy:verify": "powershell -ExecutionPolicy Bypass -File .\\scripts\\pluct-deploy-unified.ps1 -Action verify",
-		"deploy:push": "powershell -ExecutionPolicy Bypass -File .\\scripts\\pluct-deploy-unified.ps1 -Action deploy",
-		"deploy:test": "powershell -ExecutionPolicy Bypass -File .\\scripts\\pluct-deploy-unified.ps1 -Action test",
-		"deploy:all": "powershell -ExecutionPolicy Bypass -File .\\scripts\\pluct-deploy-unified.ps1 -Action all",
-		"cf-typegen": "wrangler types",
 		"build": "wrangler build",
 		"preview": "wrangler dev --remote",
-		"lint": "echo 'Linting skipped - no ESLint configured'",
-		"lint:fix": "echo 'Linting skipped - no ESLint configured'",
-		"cli": "tsx cli/index.ts",
-		"cli:status": "tsx cli/index.ts status",
-		"cli:health": "tsx cli/index.ts service-health",
-		"cli:seed": "tsx cli/index.ts seed-credits",
-		"cli:vend": "tsx cli/index.ts vend-token",
-		"cli:balance": "tsx cli/index.ts balance",
-		"cli:menu": "tsx cli/index.ts menu",
-		"test:orchestrator": "powershell -ExecutionPolicy Bypass -File .\\Pluct-Test-Orchestrator.ps1 -Target production"
+		"cli": "tsx cli/index.ts"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
@@ -42,7 +27,7 @@
 		"@hono/zod-validator": "^0.7.4",
 		"hono": "^4.9.10",
 		"jose": "^6.1.0",
-		"zod": "^4.1.12"
+		"zod": "^3.23.8"
 	},
 	"engines": {
 		"node": ">=20.0.0"
