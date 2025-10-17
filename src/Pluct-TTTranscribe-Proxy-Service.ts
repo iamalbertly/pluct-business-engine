@@ -1,6 +1,8 @@
 export interface Env {
   TTT_BASE: string;
-  TTT_SHARED_SECRET: string;
+  TTT_SHARED_SECRET?: string;
+  // Legacy/alias support so existing deployments work without renaming
+  ENGINE_SHARED_SECRET?: string;
   MAX_RETRIES?: string;
   REQUEST_TIMEOUT?: string;
 }
@@ -12,12 +14,13 @@ export class PluctTTTranscribeProxy {
     const url = `${this.env.TTT_BASE}${path}`;
     const maxRetries = parseInt(this.env.MAX_RETRIES || '3', 10);
     const timeout = parseInt(this.env.REQUEST_TIMEOUT || '30000', 10);
+    const sharedSecret = this.env.TTT_SHARED_SECRET || this.env.ENGINE_SHARED_SECRET || '';
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const requestInit: RequestInit = {
           ...init,
-          headers: { ...(init.headers || {}), 'X-Engine-Auth': this.env.TTT_SHARED_SECRET },
+          headers: { ...(init.headers || {}), 'X-Engine-Auth': sharedSecret },
           signal: AbortSignal.timeout(timeout)
         };
         

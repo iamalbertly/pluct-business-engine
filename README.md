@@ -166,13 +166,15 @@ npm install
 
 ### Environment Variables
 
-Create a `.dev.vars` file with the following variables:
+Create a `.dev.vars` file with the following variables. The gateway now supports
+alias names for secrets so existing environments continue to work without
+renaming. Preferred names are listed first, followed by accepted aliases.
 
 ```bash
-# Gateway Secrets
-ENGINE_JWT_SECRET=your_jwt_secret
-ENGINE_ADMIN_KEY=your_admin_key
-TTT_SHARED_SECRET=your_ttt_secret
+# Gateway Secrets (preferred)
+ENGINE_JWT_SECRET=your_jwt_secret             # aliases: JWT_SECRET, ENGINE_SHARED_SECRET
+ENGINE_ADMIN_KEY=your_admin_key               # aliases: ADMIN_SECRET, ADMIN_API_KEY
+TTT_SHARED_SECRET=your_ttt_secret             # alias:  ENGINE_SHARED_SECRET
 
 # TTTranscribe Configuration
 TTT_BASE=https://your-ttt-host
