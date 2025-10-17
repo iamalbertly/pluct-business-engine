@@ -234,10 +234,37 @@ export class PluctGateway {
     } catch (error) {
       console.log('Database initialization failed, continuing with fallback:', error);
     }
+
+    // Initialize circuit breaker with TTT service
+    this.circuitBreaker.addService('ttt', {
+      failureThreshold: 5,
+      timeout: 30000,
+      resetTimeout: 60000
+    });
   }
   
   private setupMiddleware() {
     // Global middleware - only CORS and logging, no validation
+
+    // Request logging middleware
+    this.app.use('*', async (c, next) => {
+      const start = Date.now();
+      const method = c.req.method;
+      const url = c.req.url;
+      const userAgent = c.req.header('User-Agent') || 'unknown';
+      const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown';
+      
+      await next();
+      
+      const duration = Date.now() - start;
+      const status = c.res.status;
+      log('request', `${method} ${url}`, { 
+        status, 
+        duration, 
+        userAgent: userAgent.substring(0, 100), 
+        ip: ip.substring(0, 50) 
+      });
+    });
 
     this.app.use('*', cors({
       origin: ['https://pluct.app', 'https://www.pluct.app', 'http://localhost:3000', 'http://localhost:8080'],
@@ -401,6 +428,19 @@ export class PluctGateway {
         kvStatus = 'error';
         log('health', 'KV connectivity check failed', { error: (error as Error).message });
       }
+
+      // Check TTT service connectivity
+      let tttStatus = 'unknown';
+      try {
+        const tttHealth = await this.healthMonitor.checkTTTHealth(c.env);
+        tttStatus = tttHealth.status;
+      } catch (error) {
+        tttStatus = 'error';
+        log('health', 'TTT connectivity check failed', { error: (error as Error).message });
+      }
+
+      // Check circuit breaker status
+      const circuitBreakerStatus = this.circuitBreaker?.getServiceStatus?.('ttt') || 'unknown';
       
       // Get available routes
       const availableRoutes = this.getAvailableEndpoints();
@@ -413,7 +453,9 @@ export class PluctGateway {
         configuration: diag.configStatus,
         connectivity: {
           d1: d1Status,
-          kv: kvStatus
+          kv: kvStatus,
+          ttt: tttStatus,
+          circuitBreaker: circuitBreakerStatus
         },
         routes: availableRoutes,
         issues: allConfigured ? [] : diag.missing.map(k => `Missing ${k}`),
