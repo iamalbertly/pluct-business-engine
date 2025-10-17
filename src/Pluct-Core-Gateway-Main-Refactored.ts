@@ -231,7 +231,11 @@ export class PluctGateway {
     this.tttProxy = new PluctTTTranscribeProxy(env);
     this.metadataResolver = new PluctMetadataResolver(env);
     
-    await this.databaseManager.initializeDatabase();
+    try {
+      await this.databaseManager.initializeDatabase();
+    } catch (error) {
+      console.log('Database initialization failed, continuing with fallback:', error);
+    }
   }
   
   private setupMiddleware() {

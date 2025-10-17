@@ -44,8 +44,8 @@ export class PluctDatabaseManager {
       
       console.log('be:database msg=Database initialized successfully');
     } catch (error) {
-      console.log(`be:database msg=Database initialization failed metadata=${JSON.stringify({ error: (error as Error).message })}`);
-      throw error;
+      console.log(`be:database msg=Database initialization failed, will use KV fallback metadata=${JSON.stringify({ error: (error as Error).message })}`);
+      // Don't throw error - allow fallback to KV
     }
   }
 }
