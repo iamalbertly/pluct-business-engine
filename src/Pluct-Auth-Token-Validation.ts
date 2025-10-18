@@ -15,21 +15,42 @@ export class PluctAuthValidator {
   constructor(private env: Env) {}
 
   async verifyToken(token: string, requireScope: boolean = true): Promise<TokenPayload> {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(this.env.ENGINE_JWT_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-    
-    const { payload } = await jwtVerify(token, key);
-    
-    if (requireScope && payload.scope !== 'ttt:transcribe') {
-      throw new Error('invalid_scope');
+    try {
+      console.log('🔧 JWT Verification Debug:', { 
+        hasSecret: !!this.env.ENGINE_JWT_SECRET,
+        secretLength: this.env.ENGINE_JWT_SECRET?.length,
+        tokenLength: token.length,
+        requireScope
+      });
+      
+      const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(this.env.ENGINE_JWT_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['verify']
+      );
+      
+      const { payload } = await jwtVerify(token, key);
+      console.log('🔧 JWT Payload:', { 
+        sub: payload.sub, 
+        scope: payload.scope, 
+        exp: payload.exp,
+        iat: payload.iat 
+      });
+      
+      if (requireScope && payload.scope !== 'ttt:transcribe') {
+        throw new Error('invalid_scope');
+      }
+      
+      return payload as unknown as TokenPayload;
+    } catch (error) {
+      console.log('🔧 JWT Verification Error:', { 
+        error: (error as Error).message,
+        tokenStart: token.substring(0, 20) + '...'
+      });
+      throw error;
     }
-    
-    return payload as unknown as TokenPayload;
   }
   
   async generateShortLivedToken(payload: any): Promise<string> {

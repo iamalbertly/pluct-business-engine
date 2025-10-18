@@ -13,11 +13,23 @@ export class PluctCreditsManager {
 
   async getCredits(userId: string): Promise<number> {
     try {
+      console.log('🔧 D1 Query Debug:', { userId, hasDB: !!this.env.DB });
+      
       const result = await this.env.DB.prepare('SELECT balance FROM credits WHERE user_id = ?').bind(userId).first();
-      return result ? (result.balance as number) : 0;
+      console.log('🔧 D1 Query Result:', { result, balance: result?.balance });
+      
+      if (!result) {
+        // User doesn't exist, create them with 0 balance
+        console.log('🔧 Creating new user:', userId);
+        await this.env.DB.prepare('INSERT INTO credits (user_id, balance) VALUES (?, 0)').bind(userId).run();
+        return 0;
+      }
+      
+      return result.balance as number;
     } catch (error) {
       console.log(`be:credits msg=Failed to get credits from D1, falling back to KV metadata=${JSON.stringify({ error: (error as Error).message, userId })}`);
       const v = await this.env.KV_USERS.get(`credits:${userId}`);
+      console.log('🔧 KV Fallback:', { kvValue: v, parsed: parseInt(v || '0', 10) });
       return parseInt(v || '0', 10);
     }
   }

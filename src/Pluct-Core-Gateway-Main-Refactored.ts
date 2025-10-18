@@ -240,15 +240,26 @@ export class PluctGateway {
   }
   
   async initialize(env: Env): Promise<void> {
-    this.authValidator = new PluctAuthValidator(env);
-    this.creditsManager = new PluctCreditsManager(env);
-    this.rateLimiter = new PluctRateLimiter(env);
-    this.databaseManager = new PluctDatabaseManager(env);
+    // Resolve configuration first
+    const resolvedConfig = resolveConfig(env);
+    
+    // Create a resolved env object with the correct secrets
+    const resolvedEnv = {
+      ...env,
+      ENGINE_JWT_SECRET: resolvedConfig.ENGINE_JWT_SECRET || env.ENGINE_JWT_SECRET,
+      ENGINE_ADMIN_KEY: resolvedConfig.ENGINE_ADMIN_KEY || env.ENGINE_ADMIN_KEY,
+      TTT_SHARED_SECRET: resolvedConfig.TTT_SHARED_SECRET || env.TTT_SHARED_SECRET
+    };
+    
+    this.authValidator = new PluctAuthValidator(resolvedEnv);
+    this.creditsManager = new PluctCreditsManager(resolvedEnv);
+    this.rateLimiter = new PluctRateLimiter(resolvedEnv);
+    this.databaseManager = new PluctDatabaseManager(resolvedEnv);
     this.circuitBreaker = new PluctCircuitBreaker();
-    this.healthMonitor = new PluctHealthMonitor(env);
-    this.tttProxy = new PluctTTTranscribeProxy(env);
+    this.healthMonitor = new PluctHealthMonitor(resolvedEnv);
+    this.tttProxy = new PluctTTTranscribeProxy(resolvedEnv);
     // Reinitialize with real env
-    this.metadataResolver = new PluctMetadataResolver(env);
+    this.metadataResolver = new PluctMetadataResolver(resolvedEnv);
     
     try {
       await this.databaseManager.initializeDatabase();
@@ -756,11 +767,21 @@ export class PluctGateway {
         }
         
         const token = auth.slice(7);
+        console.log('🔧 Balance Check Debug:', { 
+          hasToken: !!token, 
+          tokenLength: token.length,
+          tokenStart: token.substring(0, 20) + '...'
+        });
+        
         const payload = await this.authValidator.verifyToken(token, false);
         const userId = payload.sub;
         
+        console.log('🔧 User ID from JWT:', userId);
+        
         // Get current balance
         const balance = await this.creditsManager.getCredits(userId);
+        
+        console.log('🔧 Retrieved balance:', balance);
         
         return c.json({
           userId,
@@ -769,7 +790,10 @@ export class PluctGateway {
         });
         
       } catch (error) {
-        log('balance', 'balance check failed', { error: (error as Error).message });
+        console.log('🔧 Balance check error:', { 
+          error: (error as Error).message, 
+          stack: (error as Error).stack 
+        });
         return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
       }
     });
