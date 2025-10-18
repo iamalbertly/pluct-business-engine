@@ -107,7 +107,7 @@ function pickFirst(env: any, keys: string[]): string | undefined {
 }
 
 function resolveConfig(env: any): EffectiveConfig {
-  return {
+  const config = {
     // Accept legacy names so your current Cloudflare secrets keep working:
     ENGINE_JWT_SECRET: pickFirst(env, ['ENGINE_JWT_SECRET', 'JWT_SECRET', 'ENGINE_SHARED_SECRET']),
     ENGINE_ADMIN_KEY:  pickFirst(env, ['ENGINE_ADMIN_KEY', 'ADMIN_SECRET', 'ADMIN_API_KEY']),
@@ -116,6 +116,16 @@ function resolveConfig(env: any): EffectiveConfig {
     KV_USERS:          env.KV_USERS,
     DB:                env.DB
   };
+  
+  // Debug logging for secret resolution
+  console.log('🔧 Secret Resolution Debug:');
+  console.log('TTT_SHARED_SECRET sources:', {
+    'TTT_SHARED_SECRET': !!env.TTT_SHARED_SECRET,
+    'ENGINE_SHARED_SECRET': !!env.ENGINE_SHARED_SECRET,
+    'resolved': !!config.TTT_SHARED_SECRET
+  });
+  
+  return config;
 }
 
 // Utilities
@@ -143,6 +153,17 @@ function buildInfo(env: Env) {
 
 function getConfigurationDiagnostics(env: any) {
   const cfg = resolveConfig(env);
+  
+  // Add debug logging to see what's available
+  console.log('🔍 Configuration Debug:');
+  console.log('Available env keys:', Object.keys(env).filter(k => k.startsWith('ENGINE_') || k.startsWith('TTT_') || k.startsWith('JWT_') || k.startsWith('ADMIN_')));
+  console.log('Resolved config:', {
+    ENGINE_JWT_SECRET: !!cfg.ENGINE_JWT_SECRET,
+    ENGINE_ADMIN_KEY: !!cfg.ENGINE_ADMIN_KEY,
+    TTT_SHARED_SECRET: !!cfg.TTT_SHARED_SECRET,
+    TTT_BASE: !!cfg.TTT_BASE,
+    KV_USERS: !!cfg.KV_USERS
+  });
   
   const configStatus = {
     ENGINE_JWT_SECRET: !!cfg.ENGINE_JWT_SECRET,

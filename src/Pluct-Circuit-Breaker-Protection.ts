@@ -6,6 +6,7 @@ export interface CircuitBreakerState {
 }
 
 export class PluctCircuitBreaker {
+  private services: Map<string, CircuitBreakerState> = new Map();
   private state: CircuitBreakerState = {
     state: 'closed',
     failureCount: 0,
@@ -16,6 +17,21 @@ export class PluctCircuitBreaker {
   private readonly failureThreshold = 5;
   private readonly recoveryTimeout = 60000; // 1 minute
   private readonly halfOpenMaxCalls = 3;
+
+  addService(serviceName: string, config: { failureThreshold?: number; timeout?: number; resetTimeout?: number }) {
+    this.services.set(serviceName, {
+      state: 'closed',
+      failureCount: 0,
+      lastFailureTime: 0,
+      successCount: 0
+    });
+    console.log(`be:circuit_breaker msg=Added service ${serviceName}`);
+  }
+
+  getServiceStatus(serviceName: string): string {
+    const service = this.services.get(serviceName);
+    return service ? service.state : 'unknown';
+  }
 
   async execute<T>(operation: () => Promise<T>): Promise<T> {
     if (this.state.state === 'open') {
