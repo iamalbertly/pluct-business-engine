@@ -611,7 +611,7 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
     
     // Validate error schema
     const body = response.json;
-    if (!body.ok || body.ok !== false) {
+    if (body.ok !== false) {
       throw new Error('Missing or invalid ok field');
     }
     
@@ -647,7 +647,7 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
     
     // Validate error schema
     const body = response.json;
-    if (!body.ok || body.ok !== false) {
+    if (body.ok !== false) {
       throw new Error('Missing or invalid ok field');
     }
     

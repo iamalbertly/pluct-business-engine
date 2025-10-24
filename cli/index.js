@@ -557,7 +557,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
             throw new Error(`Expected 404, got ${response.status}`);
         // Validate error schema
         const body = response.json;
-        if (!body.ok || body.ok !== false) {
+        if (body.ok !== false) {
             throw new Error('Missing or invalid ok field');
         }
         if (body.code !== 'route_not_found') {
@@ -586,7 +586,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
         }
         // Validate error schema
         const body = response.json;
-        if (!body.ok || body.ok !== false) {
+        if (body.ok !== false) {
             throw new Error('Missing or invalid ok field');
         }
         if (body.code !== 'method_not_allowed') {

@@ -218,7 +218,7 @@ function resolveConfig(env: any): EffectiveConfig {
   const config = {
     // Accept legacy names so your current Cloudflare secrets keep working:
     ENGINE_JWT_SECRET: pickFirst(env, ['ENGINE_JWT_SECRET', 'JWT_SECRET', 'ENGINE_SHARED_SECRET']),
-    ENGINE_ADMIN_KEY:  pickFirst(env, ['ENGINE_ADMIN_KEY', 'ADMIN_SECRET', 'ADMIN_API_KEY']),
+    ENGINE_ADMIN_KEY:  pickFirst(env, ['ENGINE_ADMIN_KEY', 'ADMIN_SECRET', 'ADMIN_API_KEY', 'ADMIN_KEY']),
     TTT_SHARED_SECRET: pickFirst(env, ['TTT_SHARED_SECRET', 'ENGINE_SHARED_SECRET']),
     TTT_BASE:          pickFirst(env, ['TTT_BASE']),
     KV_USERS:          env.KV_USERS,
@@ -388,6 +388,27 @@ export class PluctGateway {
       // Enhanced stability: Graceful degradation
       fallbackEnabled: true
     });
+    
+    // Enhanced stability: Additional service circuit breakers
+    this.circuitBreaker.addService('metadata', {
+      failureThreshold: 3,
+      timeout: 15000,
+      resetTimeout: 30000,
+      backoffMultiplier: 1.5,
+      maxBackoffMs: 120000, // 2 minutes max
+      healthCheckInterval: 20000, // 20 seconds
+      fallbackEnabled: true
+    });
+    
+    this.circuitBreaker.addService('database', {
+      failureThreshold: 10,
+      timeout: 5000,
+      resetTimeout: 120000, // 2 minutes
+      backoffMultiplier: 1.2,
+      maxBackoffMs: 600000, // 10 minutes max
+      healthCheckInterval: 10000, // 10 seconds
+      fallbackEnabled: true
+    });
   }
   
   private setupMiddleware() {
@@ -460,7 +481,7 @@ export class PluctGateway {
       }
     });
 
-    // Request logging middleware
+    // Request timeout protection middleware
     this.app.use('*', async (c, next) => {
       const start = Date.now();
       const method = c.req.method;
@@ -468,7 +489,27 @@ export class PluctGateway {
       const userAgent = c.req.header('User-Agent') || 'unknown';
       const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown';
       
-      await next();
+      // Set request timeout (30 seconds)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timeout')), 30000);
+      });
+      
+      try {
+        await Promise.race([next(), timeoutPromise]);
+      } catch (error) {
+        if ((error as Error).message === 'Request timeout') {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'request_timeout',
+            'Request processing timeout',
+            { timeoutMs: 30000 },
+            build,
+            'Please try again with a simpler request'
+          );
+          return c.json(errorResponse, 408);
+        }
+        throw error;
+      }
       
       const duration = Date.now() - start;
       const status = c.res.status;
@@ -478,6 +519,39 @@ export class PluctGateway {
         userAgent: userAgent.substring(0, 100), 
         ip: ip.substring(0, 50) 
       });
+    });
+
+    // Request deduplication middleware
+    this.app.use('*', async (c, next) => {
+      const method = c.req.method;
+      const path = c.req.path;
+      const clientRequestId = c.req.header('X-Client-Request-Id');
+      
+      if (clientRequestId && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+        const dedupKey = `dedup:${method}:${path}:${clientRequestId}`;
+        const existing = await c.env.KV_USERS?.get(dedupKey);
+        
+        if (existing) {
+          const cachedResponse = JSON.parse(existing);
+          return c.json(cachedResponse.body, cachedResponse.status, cachedResponse.headers);
+        }
+        
+        // Store processing marker
+        await c.env.KV_USERS?.put(dedupKey, JSON.stringify({ status: 'processing' }), { expirationTtl: 60 });
+      }
+      
+      await next();
+      
+      // Store successful response for deduplication
+      if (clientRequestId && c.res.status < 400) {
+        const dedupKey = `dedup:${method}:${path}:${clientRequestId}`;
+        const responseData = {
+          status: c.res.status,
+          headers: Object.fromEntries(c.res.headers.entries()),
+          body: await c.res.clone().json().catch(() => null)
+        };
+        await c.env.KV_USERS?.put(dedupKey, JSON.stringify(responseData), { expirationTtl: 300 });
+      }
     });
 
     // Global error handler
@@ -863,7 +937,15 @@ export class PluctGateway {
     // Metadata endpoint with randomized TTL caching
     this.app.get('/meta', zValidator('query', MetaQuerySchema, (result, c) => {
       if (!result.success) {
-        return handleMetaZodError(c, result.error);
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'invalid_body',
+          'Invalid query parameters',
+          { errors: result.error.errors },
+          build,
+          'Provide a valid TikTok URL'
+        );
+        return c.json(errorResponse, 422);
       }
     }), async c => {
       try {
@@ -1372,11 +1454,28 @@ export class PluctGateway {
         
       } catch (error) {
         log('transcribe', 'transcription failed', { error: (error as Error).message });
+        
+        // Handle JWT validation errors
+        const errorMessage = (error as Error).message;
+        if (errorMessage.includes('JWS') || errorMessage.includes('JWT') || errorMessage.includes('signature') || errorMessage.includes('invalid_scope')) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Invalid or expired token',
+            { error: errorMessage },
+            build,
+            'Provide a valid authentication token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
+        }
+        
         const build = buildInfo(c.env);
         const errorResponse = createErrorResponse(
           'transcription_failed',
           'Transcription failed',
-          { error: (error as Error).message },
+          { error: errorMessage },
           build,
           'Please try again or contact support if the issue persists'
         );
@@ -1473,11 +1572,28 @@ export class PluctGateway {
         
       } catch (error) {
         log('status', 'status check failed', { error: (error as Error).message });
+        
+        // Handle JWT validation errors
+        const errorMessage = (error as Error).message;
+        if (errorMessage.includes('JWS') || errorMessage.includes('JWT') || errorMessage.includes('signature') || errorMessage.includes('invalid_scope')) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Invalid or expired token',
+            { error: errorMessage },
+            build,
+            'Provide a valid authentication token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
+        }
+        
         const build = buildInfo(c.env);
         const errorResponse = createErrorResponse(
           'status_check_failed',
           'Status check failed',
-          { error: (error as Error).message },
+          { error: errorMessage },
           build,
           'Please try again or contact support if the issue persists'
         );
