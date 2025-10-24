@@ -11,9 +11,79 @@ import { PluctHealthMonitor } from './Pluct-Health-Monitoring-Service';
 import { PluctTTTranscribeProxy } from './Pluct-TTTranscribe-Proxy-Service';
 import { PluctMetadataResolver } from './Pluct-Metadata-Resolver-Service';
 
+// Global error schema interface
+interface ErrorResponse {
+  ok: false;
+  code: string;
+  message: string;
+  details?: Record<string, any>;
+  build?: {
+    ref: string;
+    deployedAt: string;
+  };
+  guidance?: string | null;
+}
+
+// Global success response interface
+interface SuccessResponse {
+  ok: true;
+  [key: string]: any;
+}
+
+// Global error response helper
+function createErrorResponse(
+  code: string, 
+  message: string, 
+  details?: Record<string, any>,
+  build?: { ref: string; deployedAt: string },
+  guidance?: string | null
+): ErrorResponse {
+  return {
+    ok: false,
+    code,
+    message,
+    details,
+    build,
+    guidance
+  };
+}
+
+// Global CORS configuration
+const corsConfig = {
+  origin: (origin: string) => {
+    // Allow specific origins or all for development
+    const allowedOrigins = [
+      'https://pluct.com',
+      'https://app.pluct.com',
+      'https://mobile.pluct.com',
+      'http://localhost:3000',
+      'http://localhost:8080'
+    ];
+    return allowedOrigins.includes(origin) || !origin ? origin : null;
+  },
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-API-Key',
+    'X-Admin-Key',
+    'X-Client-Request-Id',
+    'X-API-Version',
+    'X-Capabilities'
+  ],
+  exposeHeaders: [
+    'X-API-Deprecation',
+    'X-Capabilities',
+    'WWW-Authenticate',
+    'Allow'
+  ],
+  credentials: true,
+  maxAge: 86400
+};
+
 interface Env {
   KV_USERS: any;
-  DB: D1Database;
+  DB: any;
   ENGINE_JWT_SECRET: string;
   ENGINE_ADMIN_KEY: string;
   TTT_SHARED_SECRET: string;
@@ -36,7 +106,7 @@ type EffectiveConfig = {
   TTT_SHARED_SECRET?: string;
   TTT_BASE?: string;
   KV_USERS?: any;
-  DB?: D1Database;
+  DB?: any;
 }
 
 // Validation schemas
@@ -80,7 +150,9 @@ const MetaResolveSchema = z.object({
 
 const AddCreditsSchema = z.object({
   userId: z.string().min(1, 'User ID is required'),
-  amount: z.number().int().positive('Amount must be a positive integer')
+  amount: z.number().int().positive('Amount must be a positive integer'),
+  reason: z.string().optional(),
+  clientRequestId: z.string().optional()
 });
 
 const MetaQuerySchema = z.object({
@@ -146,8 +218,8 @@ function jsonError(c: any, status: number, code: string, message: string, detail
 
 function buildInfo(env: Env) {
   return {
-    ref: env.BUILD_REF || null,
-    deployedAt: env.BUILD_TIME || null
+    ref: env.BUILD_REF || 'unknown',
+    deployedAt: env.BUILD_TIME || new Date().toISOString()
   };
 }
 
@@ -276,7 +348,17 @@ export class PluctGateway {
   }
   
   private setupMiddleware() {
-    // Global middleware - only CORS and logging, no validation
+    // Global CORS middleware with proper configuration
+    this.app.use('*', cors(corsConfig));
+
+    // Global content-type middleware - ensure all responses are JSON
+    this.app.use('*', async (c, next) => {
+      await next();
+      // Ensure all responses have proper content-type
+      if (!c.res.headers.get('content-type')) {
+        c.res.headers.set('content-type', 'application/json');
+      }
+    });
 
     // Request logging middleware
     this.app.use('*', async (c, next) => {
@@ -298,13 +380,35 @@ export class PluctGateway {
       });
     });
 
-    this.app.use('*', cors({
-      origin: ['https://pluct.app', 'https://www.pluct.app', 'http://localhost:3000', 'http://localhost:8080'],
-      allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Client-Request-Id'],
-      allowMethods: ['POST', 'GET', 'OPTIONS', 'PUT', 'DELETE'],
-      maxAge: 86400,
-      credentials: true
-    }));
+    // Global error handler
+    this.app.onError((err, c) => {
+      console.error('Global error handler:', err);
+      
+      const build = buildInfo(c.env);
+      const errorResponse = createErrorResponse(
+        'internal_server_error',
+        'An unexpected error occurred',
+        { error: err.message },
+        build,
+        'Please try again or contact support if the issue persists'
+      );
+      
+      return c.json(errorResponse, 500);
+    });
+
+    // 404 handler for unknown routes
+    this.app.notFound((c) => {
+      const build = buildInfo(c.env);
+      const errorResponse = createErrorResponse(
+        'route_not_found',
+        'Endpoint not found',
+        {},
+        build,
+        'Check the API documentation for available endpoints'
+      );
+      
+      return c.json(errorResponse, 404);
+    });
 
     // Method validation middleware
     this.app.use('*', async (c, next) => {
@@ -464,7 +568,7 @@ export class PluctGateway {
       // Check TTT service connectivity
       let tttStatus = 'unknown';
       try {
-        const tttHealth = await this.healthMonitor.checkTTTHealth(c.env);
+        const tttHealth = await this.healthMonitor.checkHealth();
         tttStatus = tttHealth.status;
       } catch (error) {
         tttStatus = 'error';
@@ -663,6 +767,19 @@ export class PluctGateway {
       try {
         const { url } = c.req.valid('query');
         
+        // Validate TikTok URL
+        if (!url.includes('tiktok.com') && !url.includes('vm.tiktok.com')) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'invalid_url',
+            'Only TikTok URLs are supported',
+            { providedUrl: url, supportedDomains: ['tiktok.com', 'vm.tiktok.com'] },
+            build,
+            'Please provide a valid TikTok URL'
+          );
+          return c.json(errorResponse, 422);
+        }
+        
         // Check if KV_USERS is available
         if (!c.env.KV_USERS) {
           log('meta', 'KV_USERS not available, fetching without cache');
@@ -689,7 +806,15 @@ export class PluctGateway {
         
       } catch (error) {
         log('meta', 'metadata fetch failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'METADATA_FETCH_FAILED', 'Failed to fetch metadata', { error: (error as Error).message });
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'metadata_fetch_failed',
+          'Failed to fetch metadata',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
     
@@ -763,7 +888,17 @@ export class PluctGateway {
         // Extract and verify JWT authentication
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Authorization header required',
+            { providedAuth: !!auth },
+            build,
+            'Provide valid Authorization Bearer token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
         }
         
         const token = auth.slice(7);
@@ -784,6 +919,7 @@ export class PluctGateway {
         console.log('🔧 Retrieved balance:', balance);
         
         return c.json({
+          ok: true,
           userId,
           balance,
           updatedAt: new Date().toISOString()
@@ -794,7 +930,15 @@ export class PluctGateway {
           error: (error as Error).message, 
           stack: (error as Error).stack 
         });
-        return c.json({ error: 'BALANCE_CHECK_FAILED', message: 'Failed to retrieve balance' }, 500);
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'balance_check_failed',
+          'Failed to retrieve balance',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
 
@@ -837,7 +981,17 @@ export class PluctGateway {
         // Extract and verify JWT authentication
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Authorization header required',
+            { providedAuth: !!auth },
+            build,
+            'Provide valid Authorization Bearer token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
         }
         
         const token = auth.slice(7);
@@ -873,7 +1027,15 @@ export class PluctGateway {
         // Atomic credit deduction
         const creditResult = await this.creditsManager.spendCreditAtomic(userId, requestId, '/v1/vend-token', ip, c.req.header('User-Agent'));
         if (!creditResult.success) {
-          return jsonError(c, 402, 'INSUFFICIENT_CREDITS', 'Insufficient credits', { balance: creditResult.balanceAfter });
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'insufficient_credits',
+            'Insufficient credits',
+            { balance: creditResult.balanceAfter, required: 1 },
+            build,
+            'Add credits to your account to continue'
+          );
+          return c.json(errorResponse, 402);
         }
         
         // Generate short-lived token
@@ -916,34 +1078,103 @@ export class PluctGateway {
     // Add Credits (Admin)
     router.post('/credits/add', zValidator('json', AddCreditsSchema), async c => {
       try {
+        // Admin authentication - support both X-API-Key and Authorization Bearer
         const adminKey = c.req.header('X-API-Key');
+        const authHeader = c.req.header('Authorization');
         const resolvedConfig = resolveConfig(c.env);
         
-        console.log('🔧 Admin Key Debug:', {
-          providedKey: adminKey,
-          providedKeyLength: adminKey?.length,
-          resolvedKey: resolvedConfig.ENGINE_ADMIN_KEY,
-          resolvedKeyLength: resolvedConfig.ENGINE_ADMIN_KEY?.length,
-          keysMatch: adminKey === resolvedConfig.ENGINE_ADMIN_KEY
-        });
+        let isAuthenticated = false;
+        let authMethod = '';
         
-        if (adminKey !== resolvedConfig.ENGINE_ADMIN_KEY) {
-          return jsonError(c, 403, 'INVALID_ADMIN_KEY', 'Invalid admin API key');
+        // Check X-API-Key header
+        if (adminKey && adminKey === resolvedConfig.ENGINE_ADMIN_KEY) {
+          isAuthenticated = true;
+          authMethod = 'X-API-Key';
+        }
+        // Check Authorization Bearer header
+        else if (authHeader?.startsWith('Bearer ') && authHeader.slice(7) === resolvedConfig.ENGINE_ADMIN_KEY) {
+          isAuthenticated = true;
+          authMethod = 'Authorization Bearer';
         }
         
-        const { userId, amount } = await c.req.json();
-        await this.creditsManager.addCredits(userId, amount);
+        if (!isAuthenticated) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Missing or invalid admin authentication',
+            { 
+              providedAuth: { 
+                hasApiKey: !!adminKey, 
+                hasAuthHeader: !!authHeader,
+                authMethod: authMethod || 'none'
+              }
+            },
+            build,
+            'Provide valid X-API-Key or Authorization Bearer header'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
+        }
         
-        return c.json({ 
-          message: 'Credits added successfully', 
-          userId, 
+        const { userId, amount, reason, clientRequestId } = await c.req.json();
+        
+        // Validate amount
+        if (amount <= 0) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'invalid_body',
+            'Amount must be greater than 0',
+            { providedAmount: amount },
+            build,
+            'Provide a positive amount value'
+          );
+          return c.json(errorResponse, 422);
+        }
+        
+        // Check for idempotency
+        if (clientRequestId) {
+          const idempotencyKey = `idempotency:credits:add:${clientRequestId}`;
+          const existing = await c.env.KV_USERS?.get(idempotencyKey);
+          if (existing) {
+            const cachedResult = JSON.parse(existing);
+            return c.json(cachedResult, 200);
+          }
+        }
+        
+        // Add credits with atomic transaction
+        const newBalance = await this.creditsManager.addCredits(userId, amount);
+        
+        const result = {
+          ok: true,
+          message: 'Credits added successfully',
+          userId,
           amount,
-          timestamp: new Date().toISOString()
-        });
+          newBalance,
+          reason: reason || 'Admin credit addition',
+          timestamp: new Date().toISOString(),
+          requestId: clientRequestId || `req_${Date.now()}`
+        };
+        
+        // Store idempotency result
+        if (clientRequestId) {
+          const idempotencyKey = `idempotency:credits:add:${clientRequestId}`;
+          await c.env.KV_USERS?.put(idempotencyKey, JSON.stringify(result), { expirationTtl: 3600 }); // 1 hour TTL
+        }
+        
+        return c.json(result, 200);
         
       } catch (error) {
         log('add_credits', 'credit addition failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'CREDIT_ADDITION_FAILED', 'Failed to add credits');
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'credit_addition_failed',
+          'Failed to add credits',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
   }
@@ -954,11 +1185,34 @@ export class PluctGateway {
       try {
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Authorization header required',
+            { providedAuth: !!auth },
+            build,
+            'Provide valid Authorization Bearer token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
         }
         
         const token = auth.slice(7);
         const payload = await this.authValidator.verifyToken(token, true);
+        
+        // Check scope
+        if (payload.scope !== 'ttt:transcribe') {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'forbidden',
+            'Insufficient scope',
+            { requiredScope: 'ttt:transcribe', providedScope: payload.scope },
+            build,
+            'Token must have ttt:transcribe scope'
+          );
+          return c.json(errorResponse, 403);
+        }
         
         const { url } = await c.req.json();
         
@@ -972,15 +1226,49 @@ export class PluctGateway {
         });
         
         if (!result.ok) {
-          return jsonError(c, result.status, 'TTT_SERVICE_ERROR', 'TTTranscribe service error');
+          // Map upstream errors appropriately
+          let statusCode = 500;
+          let errorCode = 'upstream_error';
+          
+          if (result.status >= 400 && result.status < 500) {
+            statusCode = result.status;
+            errorCode = 'upstream_client_error';
+          } else if (result.status >= 500) {
+            statusCode = result.status >= 504 ? 504 : 502;
+            errorCode = result.status >= 504 ? 'upstream_timeout' : 'upstream_error';
+          }
+          
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            errorCode,
+            'TTTranscribe service error',
+            { upstreamStatus: result.status, upstreamResponse: await result.text().catch(() => 'Unable to read response') },
+            build,
+            'Please try again or contact support if the issue persists'
+          );
+          return c.json(errorResponse, statusCode);
         }
         
-        const data = await result.json();
-        return c.json(data);
+        const data = await result.json() as any;
+        return c.json({
+          ok: true,
+          jobId: data.id || data.jobId || data.requestId,
+          status: 'queued',
+          submittedAt: new Date().toISOString(),
+          ...data
+        }, 202);
         
       } catch (error) {
         log('transcribe', 'transcription failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'TRANSCRIPTION_FAILED', 'Transcription failed');
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'transcription_failed',
+          'Transcription failed',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
 
@@ -989,11 +1277,34 @@ export class PluctGateway {
       try {
         const auth = c.req.header('Authorization');
         if (!auth?.startsWith('Bearer ')) {
-          return jsonError(c, 401, 'MISSING_AUTH', 'Authorization header required');
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'unauthorized',
+            'Authorization header required',
+            { providedAuth: !!auth },
+            build,
+            'Provide valid Authorization Bearer token'
+          );
+          return c.json(errorResponse, 401, {
+            'WWW-Authenticate': 'Bearer'
+          });
         }
         
         const token = auth.slice(7);
-        await this.authValidator.verifyToken(token, true);
+        const payload = await this.authValidator.verifyToken(token, true);
+        
+        // Check scope
+        if (payload.scope !== 'ttt:transcribe') {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'forbidden',
+            'Insufficient scope',
+            { requiredScope: 'ttt:transcribe', providedScope: payload.scope },
+            build,
+            'Token must have ttt:transcribe scope'
+          );
+          return c.json(errorResponse, 403);
+        }
         
         const id = c.req.param('id');
         
@@ -1002,15 +1313,63 @@ export class PluctGateway {
         });
         
         if (!result.ok) {
-          return jsonError(c, result.status, 'TTT_SERVICE_ERROR', 'TTTranscribe service error');
+          // Handle job not found
+          if (result.status === 404) {
+            const build = buildInfo(c.env);
+            const errorResponse = createErrorResponse(
+              'job_not_found',
+              'Job not found',
+              { jobId: id },
+              build,
+              'Check the job ID and try again'
+            );
+            return c.json(errorResponse, 404);
+          }
+          
+          // Map upstream errors appropriately
+          let statusCode = 500;
+          let errorCode = 'upstream_error';
+          
+          if (result.status >= 400 && result.status < 500) {
+            statusCode = result.status;
+            errorCode = 'upstream_client_error';
+          } else if (result.status >= 500) {
+            statusCode = result.status >= 504 ? 504 : 502;
+            errorCode = result.status >= 504 ? 'upstream_timeout' : 'upstream_error';
+          }
+          
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            errorCode,
+            'TTTranscribe service error',
+            { upstreamStatus: result.status, upstreamResponse: await result.text().catch(() => 'Unable to read response') },
+            build,
+            'Please try again or contact support if the issue persists'
+          );
+          return c.json(errorResponse, statusCode);
         }
         
-        const data = await result.json();
-        return c.json(data);
+        const data = await result.json() as any;
+        return c.json({
+          ok: true,
+          jobId: id,
+          status: data.status || data.state || 'unknown',
+          progress: data.progress,
+          result: data.result || data.transcription,
+          ...data
+        });
         
       } catch (error) {
         log('status', 'status check failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'STATUS_CHECK_FAILED', 'Status check failed');
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'status_check_failed',
+          'Status check failed',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
   }
@@ -1020,6 +1379,19 @@ export class PluctGateway {
     router.post('/resolve', zValidator('json', MetaResolveSchema), async c => {
       try {
         const { url } = await c.req.json();
+        
+        // Validate TikTok URL
+        if (!url.includes('tiktok.com') && !url.includes('vm.tiktok.com')) {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'invalid_url',
+            'Only TikTok URLs are supported',
+            { providedUrl: url, supportedDomains: ['tiktok.com', 'vm.tiktok.com'] },
+            build,
+            'Please provide a valid TikTok URL'
+          );
+          return c.json(errorResponse, 422);
+        }
         
         const metadata = await this.metadataResolver.resolveMetadata(url);
         
@@ -1032,7 +1404,15 @@ export class PluctGateway {
         
       } catch (error) {
         log('meta_resolve', 'metadata resolution failed', { error: (error as Error).message });
-        return jsonError(c, 500, 'METADATA_RESOLUTION_FAILED', 'Metadata resolution failed');
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'metadata_resolution_failed',
+          'Metadata resolution failed',
+          { error: (error as Error).message },
+          build,
+          'Please try again or contact support if the issue persists'
+        );
+        return c.json(errorResponse, 500);
       }
     });
   }

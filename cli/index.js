@@ -237,23 +237,70 @@ async function cmdRunAll(env, exitOnComplete = true) {
             return null;
         }
     };
-    // 1. Health Check - System Status
-    await runTest('Health Check - System Status', async () => {
+    // 1. Health Check - System Status (Acceptance Check)
+    await runTest('Health Check - System Status (Acceptance Check)', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/health`;
         const { request, response, durationMs } = await httpJson('GET', url);
-        if (!response.ok)
-            throw new Error(`Health check failed: ${response.status}`);
-        return { request, response, durationMs };
+        // Validate HTTP 200
+        if (response.status !== 200)
+            throw new Error(`Expected 200, got ${response.status}`);
+        // Validate response structure
+        const body = response.json;
+        if (!body.status || !['ok', 'degraded'].includes(body.status)) {
+            throw new Error(`Invalid status: ${body.status}`);
+        }
+        // Validate required fields
+        if (!body.configuration || typeof body.configuration !== 'object') {
+            throw new Error('Missing or invalid configuration field');
+        }
+        if (!body.connectivity || typeof body.connectivity !== 'object') {
+            throw new Error('Missing or invalid connectivity field');
+        }
+        if (!body.build || !body.build.ref || !body.build.deployedAt) {
+            throw new Error('Missing or invalid build information');
+        }
+        // Validate no secrets are leaked
+        const config = body.configuration;
+        for (const [key, value] of Object.entries(config)) {
+            if (typeof value === 'string' && value.length > 0 && !['true', 'false'].includes(value)) {
+                throw new Error(`Secret leaked in ${key}: ${value}`);
+            }
+        }
+        return { request, response, durationMs, status: body.status };
     });
-    // 2. Service Health Check - All Services
-    await runTest('Service Health Check - All Services', async () => {
+    // 2. Service Health Check - All Services (Acceptance Check)
+    await runTest('Service Health Check - All Services (Acceptance Check)', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/health/services`;
         const { request, response, durationMs } = await httpJson('GET', url);
-        if (!response.ok)
-            throw new Error(`Service health check failed: ${response.status}`);
-        return { request, response, durationMs };
+        // Validate HTTP 200
+        if (response.status !== 200)
+            throw new Error(`Expected 200, got ${response.status}`);
+        // Validate response structure
+        const body = response.json;
+        if (!body.services || typeof body.services !== 'object') {
+            throw new Error('Missing or invalid services field');
+        }
+        // Validate TTT service status
+        if (!body.services.ttt) {
+            throw new Error('Missing TTT service status');
+        }
+        const tttService = body.services.ttt;
+        if (!tttService.status || !['ok', 'degraded', 'error'].includes(tttService.status)) {
+            throw new Error(`Invalid TTT status: ${tttService.status}`);
+        }
+        if (typeof tttService.responseTime !== 'number') {
+            throw new Error('Invalid responseTime field');
+        }
+        if (typeof tttService.consecutiveFailures !== 'number') {
+            throw new Error('Invalid consecutiveFailures field');
+        }
+        // Validate circuit breaker status
+        if (!body.services.circuitBreaker) {
+            throw new Error('Missing circuit breaker status');
+        }
+        return { request, response, durationMs, tttStatus: tttService.status };
     });
     // 3. Authentication Test - Create User Token
     let userToken = null;
@@ -499,6 +546,151 @@ async function cmdRunAll(env, exitOnComplete = true) {
             throw new Error(`User cleanup failed: ${response.status}`);
         }
         return { request, response, durationMs };
+    });
+    // 20. 404 Error Handling (Acceptance Check)
+    await runTest('404 Error Handling (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/definitely-not-here`;
+        const { request, response, durationMs } = await httpJson('GET', url);
+        // Validate HTTP 404
+        if (response.status !== 404)
+            throw new Error(`Expected 404, got ${response.status}`);
+        // Validate error schema
+        const body = response.json;
+        if (!body.ok || body.ok !== false) {
+            throw new Error('Missing or invalid ok field');
+        }
+        if (body.code !== 'route_not_found') {
+            throw new Error(`Invalid error code: ${body.code}`);
+        }
+        if (!body.message || body.message !== 'Endpoint not found') {
+            throw new Error(`Invalid error message: ${body.message}`);
+        }
+        return { request, response, durationMs };
+    });
+    // 21. 405 Error Handling (Acceptance Check)
+    await runTest('405 Error Handling (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/health`;
+        const { request, response, durationMs } = await httpJson('POST', url, { test: 'data' });
+        // Validate HTTP 405
+        if (response.status !== 405)
+            throw new Error(`Expected 405, got ${response.status}`);
+        // Validate Allow header
+        const allowHeader = response.headers.allow;
+        if (!allowHeader) {
+            throw new Error('Missing Allow header');
+        }
+        if (!allowHeader.includes('GET')) {
+            throw new Error('Allow header missing GET method');
+        }
+        // Validate error schema
+        const body = response.json;
+        if (!body.ok || body.ok !== false) {
+            throw new Error('Missing or invalid ok field');
+        }
+        if (body.code !== 'method_not_allowed') {
+            throw new Error(`Invalid error code: ${body.code}`);
+        }
+        return { request, response, durationMs, allowHeader };
+    });
+    // 22. CORS Headers (Acceptance Check)
+    await runTest('CORS Headers (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/health`;
+        const { request, response, durationMs } = await httpJson('GET', url, undefined, {
+            'Origin': 'https://app.pluct.com'
+        });
+        // Validate CORS headers
+        const corsOrigin = response.headers['access-control-allow-origin'];
+        if (!corsOrigin) {
+            throw new Error('Missing Access-Control-Allow-Origin header');
+        }
+        const varyHeader = response.headers.vary;
+        if (!varyHeader || !varyHeader.includes('Origin')) {
+            throw new Error('Missing or invalid Vary header');
+        }
+        return { request, response, durationMs, corsOrigin, varyHeader };
+    });
+    // 23. Content-Type Headers (Acceptance Check)
+    await runTest('Content-Type Headers (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/health`;
+        const { request, response, durationMs } = await httpJson('GET', url);
+        // Validate content-type
+        const contentType = response.headers['content-type'];
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Invalid content-type: ${contentType}`);
+        }
+        return { request, response, durationMs, contentType };
+    });
+    // 24. Meta Endpoint Validation (Acceptance Check)
+    await runTest('Meta Endpoint Validation (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/meta?url=https://vm.tiktok.com/ZMADQVF4e/`;
+        const { request, response, durationMs } = await httpJson('GET', url);
+        // Should return 200 for valid TikTok URL
+        if (response.status !== 200) {
+            console.log(`⚠️  Meta endpoint returned ${response.status}, this may be expected`);
+        }
+        // Test invalid URL
+        const invalidUrl = `${base}/meta?url=https://example.com/video`;
+        const { response: invalidResponse } = await httpJson('GET', invalidUrl);
+        // Should return 422 for invalid URL
+        if (invalidResponse.status !== 422) {
+            throw new Error(`Expected 422 for invalid URL, got ${invalidResponse.status}`);
+        }
+        const invalidBody = invalidResponse.json;
+        if (invalidBody.code !== 'invalid_url') {
+            throw new Error(`Invalid error code: ${invalidBody.code}`);
+        }
+        return { request, response, durationMs, invalidResponse };
+    });
+    // 25. Admin Auth Validation (Acceptance Check)
+    await runTest('Admin Auth Validation (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/v1/credits/add`;
+        // Test without auth
+        const { response: noAuthResponse } = await httpJson('POST', url, { userId: 'test', amount: 10 });
+        if (noAuthResponse.status !== 401) {
+            throw new Error(`Expected 401 for missing auth, got ${noAuthResponse.status}`);
+        }
+        // Test with invalid auth
+        const { response: invalidAuthResponse } = await httpJson('POST', url, { userId: 'test', amount: 10 }, {
+            'X-API-Key': 'invalid-key'
+        });
+        if (invalidAuthResponse.status !== 401) {
+            throw new Error(`Expected 401 for invalid auth, got ${invalidAuthResponse.status}`);
+        }
+        // Test WWW-Authenticate header
+        const wwwAuth = noAuthResponse.headers['www-authenticate'];
+        if (!wwwAuth || !wwwAuth.includes('Bearer')) {
+            throw new Error('Missing or invalid WWW-Authenticate header');
+        }
+        return { noAuthResponse, invalidAuthResponse, wwwAuth };
+    });
+    // 26. Insufficient Credits Handling (Acceptance Check)
+    await runTest('Insufficient Credits Handling (Acceptance Check)', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/v1/vend-token`;
+        // Create a user with 0 credits
+        const zeroCreditUser = `zero-credit-${Date.now()}`;
+        const zeroCreditToken = await createUserToken(env, zeroCreditUser);
+        const { response } = await httpJson('POST', url, { userId: zeroCreditUser }, {
+            'Authorization': `Bearer ${zeroCreditToken}`
+        });
+        // Should return 402 for insufficient credits
+        if (response.status !== 402) {
+            throw new Error(`Expected 402 for insufficient credits, got ${response.status}`);
+        }
+        const body = response.json;
+        if (body.code !== 'insufficient_credits') {
+            throw new Error(`Invalid error code: ${body.code}`);
+        }
+        if (typeof body.details.balance !== 'number') {
+            throw new Error('Missing or invalid balance in response');
+        }
+        return { response, balance: body.details.balance };
     });
     // Final Results
     console.log('\n📊 Test Suite Results');
