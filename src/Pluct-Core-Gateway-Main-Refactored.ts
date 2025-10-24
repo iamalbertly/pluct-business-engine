@@ -1274,7 +1274,9 @@ export class PluctGateway {
           adminKeyLength: adminKey?.length || 0,
           authHeaderLength: authHeader?.length || 0,
           resolvedConfigKeyLength: resolvedConfig.ENGINE_ADMIN_KEY?.length || 0,
-          keysMatch: adminKey === resolvedConfig.ENGINE_ADMIN_KEY
+          keysMatch: adminKey === resolvedConfig.ENGINE_ADMIN_KEY,
+          adminKeyValue: adminKey,
+          resolvedConfigValue: resolvedConfig.ENGINE_ADMIN_KEY
         });
         
         let isAuthenticated = false;
