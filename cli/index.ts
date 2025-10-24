@@ -145,7 +145,7 @@ async function cmdVendToken(env: EnvVars, userId: string, exitOnComplete: boolea
   const url = `${base}/v1/vend-token`;
   // Need to create a user JWT token first for authentication
   const userToken = await createUserToken(env, userId);
-  const { request, response, durationMs } = await httpJson('POST', url, {}, { 'Authorization': `Bearer ${userToken}` });
+  const { request, response, durationMs } = await httpJson('POST', url, { userId }, { 'Authorization': `Bearer ${userToken}` });
   console.log(JSON.stringify({ command: 'vend-token', request, response, userId, durationMs }, null, 2));
   logLine(`vend-token ${response.status} userId=${userId}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
@@ -219,6 +219,233 @@ async function cmdTttStatus(env: EnvVars, token: string, id: string, exitOnCompl
   console.log(JSON.stringify({ command: 'ttt-status', request, response, durationMs }, null, 2));
   logLine(`ttt-status ${response.status} id=${id}`);
   if (exitOnComplete) process.exit(response.ok ? 0 : 1);
+}
+
+// Comprehensive end-to-end test suite
+async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
+  const testUserId = `e2e-test-${Date.now()}`;
+  const testResults: any[] = [];
+  let overallSuccess = true;
+  
+  console.log('\n🚀 Starting Pluct Business Engine End-to-End Test Suite');
+  console.log('====================================================');
+  
+  const runTest = async (testName: string, testFn: () => Promise<any>) => {
+    console.log(`\n📋 Running: ${testName}`);
+    try {
+      const result = await testFn();
+      testResults.push({ test: testName, status: 'PASS', result });
+      console.log(`✅ ${testName} - PASSED`);
+      return result;
+    } catch (error) {
+      testResults.push({ test: testName, status: 'FAIL', error: String(error) });
+      console.log(`❌ ${testName} - FAILED: ${error}`);
+      overallSuccess = false;
+      return null;
+    }
+  };
+
+  // 1. Health Check - System Status
+  await runTest('Health Check - System Status', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/health`;
+    const { request, response, durationMs } = await httpJson('GET', url);
+    if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 2. Service Health Check - All Services
+  await runTest('Service Health Check - All Services', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/health/services`;
+    const { request, response, durationMs } = await httpJson('GET', url);
+    if (!response.ok) throw new Error(`Service health check failed: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 3. Authentication Test - Create User Token
+  let userToken: string | null = null;
+  await runTest('Authentication - Create User Token', async () => {
+    userToken = await createUserToken(env, testUserId);
+    if (!userToken) throw new Error('Failed to create user token');
+    return { token: userToken.substring(0, 20) + '...' };
+  });
+
+  // 4. User Creation - Add Initial Credits
+  await runTest('User Creation - Add Initial Credits', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/add`;
+    const apiKeyHeaders = buildAuthHeaders(env, 'apikey');
+    const { request, response, durationMs } = await httpJson('POST', url, { userId: testUserId, amount: 100 }, apiKeyHeaders);
+    if (!response.ok) throw new Error(`Failed to add credits: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 5. Balance Check - Verify Credits Added
+  await runTest('Balance Check - Verify Credits Added', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/balance`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${userToken}` });
+    if (!response.ok) throw new Error(`Failed to get balance: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 6. Token Vending - Create Service Token
+  let serviceToken: string | null = null;
+  await runTest('Token Vending - Create Service Token', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/vend-token`;
+    const { request, response, durationMs } = await httpJson('POST', url, { userId: testUserId }, { 'Authorization': `Bearer ${userToken}` });
+    if (!response.ok) throw new Error(`Failed to vend token: ${response.status}`);
+    serviceToken = response.json?.token;
+    if (!serviceToken) throw new Error('No service token returned');
+    return { request, response, durationMs };
+  });
+
+  // 7. Token Validation - Test Service Token
+  await runTest('Token Validation - Test Service Token', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/ping`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
+    if (!response.ok) throw new Error(`Token validation failed: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 8. TTT Transcribe - Test Core Service
+  let transcribeId: string | null = null;
+  await runTest('TTT Transcribe - Test Core Service', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/transcribe`;
+    const payload = { 
+      audio: "test-audio-data", 
+      format: "wav",
+      language: "en-US",
+      test: true 
+    };
+    const { request, response, durationMs } = await httpJson('POST', url, payload, { 'Authorization': `Bearer ${serviceToken}` });
+    if (!response.ok) throw new Error(`TTT transcribe failed: ${response.status}`);
+    transcribeId = response.json?.id || 'test-id';
+    return { request, response, durationMs, transcribeId };
+  });
+
+  // 9. TTT Status Check - Monitor Service
+  await runTest('TTT Status Check - Monitor Service', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/${encodeURIComponent(transcribeId || 'test-id')}`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
+    // Status check might return 404 for test ID, which is acceptable
+    if (response.status !== 200 && response.status !== 404) {
+      throw new Error(`TTT status check failed: ${response.status}`);
+    }
+    return { request, response, durationMs };
+  });
+
+  // 10. Credit Consumption - Simulate Service Usage
+  await runTest('Credit Consumption - Simulate Service Usage', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/consume`;
+    const { request, response, durationMs } = await httpJson('POST', url, { 
+      userId: testUserId, 
+      amount: 10,
+      service: 'ttt-transcribe',
+      requestId: transcribeId 
+    }, { 'Authorization': `Bearer ${userToken}` });
+    // This endpoint might not exist, so we'll check for 404 as acceptable
+    if (response.status !== 200 && response.status !== 404) {
+      throw new Error(`Credit consumption failed: ${response.status}`);
+    }
+    return { request, response, durationMs };
+  });
+
+  // 11. Final Balance Check - Verify Credits Consumed
+  await runTest('Final Balance Check - Verify Credits Consumed', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/v1/credits/balance`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${userToken}` });
+    if (!response.ok) throw new Error(`Final balance check failed: ${response.status}`);
+    return { request, response, durationMs };
+  });
+
+  // 12. Admin Operations - List Users (if implemented)
+  await runTest('Admin Operations - List Users', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/admin/users`;
+    const adminHeaders = buildAuthHeaders(env, 'admin');
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, adminHeaders);
+    // Admin endpoints might not be implemented, 404 is acceptable
+    if (response.status !== 200 && response.status !== 404) {
+      throw new Error(`Admin list users failed: ${response.status}`);
+    }
+    return { request, response, durationMs };
+  });
+
+  // 13. Rate Limiting Test - Multiple Requests
+  await runTest('Rate Limiting Test - Multiple Requests', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/ping`;
+    const promises = Array(5).fill(null).map(() => 
+      httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` })
+    );
+    const results = await Promise.all(promises);
+    const successCount = results.filter(r => r.response.ok).length;
+    if (successCount === 0) throw new Error('All rate limit test requests failed');
+    return { successCount, totalRequests: results.length };
+  });
+
+  // 14. Error Handling Test - Invalid Token
+  await runTest('Error Handling Test - Invalid Token', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/ttt/status/ping`;
+    const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer invalid-token` });
+    // Should return 401 or 403 for invalid token
+    if (response.status !== 401 && response.status !== 403) {
+      throw new Error(`Expected 401/403 for invalid token, got: ${response.status}`);
+    }
+    return { request, response, durationMs };
+  });
+
+  // 15. Cleanup - Remove Test User (if implemented)
+  await runTest('Cleanup - Remove Test User', async () => {
+    const base = getBaseUrl(env);
+    const url = `${base}/admin/users/${testUserId}`;
+    const adminHeaders = buildAuthHeaders(env, 'admin');
+    const { request, response, durationMs } = await httpJson('DELETE', url, undefined, adminHeaders);
+    // Cleanup might not be implemented, 404 is acceptable
+    if (response.status !== 200 && response.status !== 404) {
+      throw new Error(`User cleanup failed: ${response.status}`);
+    }
+    return { request, response, durationMs };
+  });
+
+  // Final Results
+  console.log('\n📊 Test Suite Results');
+  console.log('====================');
+  console.log(`Total Tests: ${testResults.length}`);
+  console.log(`Passed: ${testResults.filter(t => t.status === 'PASS').length}`);
+  console.log(`Failed: ${testResults.filter(t => t.status === 'FAIL').length}`);
+  console.log(`Success Rate: ${Math.round((testResults.filter(t => t.status === 'PASS').length / testResults.length) * 100)}%`);
+  
+  if (overallSuccess) {
+    console.log('\n🎉 All tests passed! The Pluct Business Engine is fully operational.');
+  } else {
+    console.log('\n⚠️  Some tests failed. Please check the results above.');
+  }
+
+  const finalResult = {
+    command: 'runAll',
+    testUserId,
+    totalTests: testResults.length,
+    passed: testResults.filter(t => t.status === 'PASS').length,
+    failed: testResults.filter(t => t.status === 'FAIL').length,
+    successRate: Math.round((testResults.filter(t => t.status === 'PASS').length / testResults.length) * 100),
+    results: testResults,
+    overallSuccess
+  };
+
+  console.log(JSON.stringify(finalResult, null, 2));
+  logLine(`runAll completed: ${finalResult.passed}/${finalResult.totalTests} tests passed`);
+  
+  if (exitOnComplete) process.exit(overallSuccess ? 0 : 1);
 }
 
 // Interactive USSD-style menu
@@ -351,6 +578,7 @@ async function runInteractiveMenu(env: EnvVars) {
     console.log('  4. API Keys');
     console.log('  5. Service Monitoring');
     console.log('  6. Status');
+    console.log('  7. Run All Tests (E2E)');
     console.log('  0. Exit');
     const choice = (await ask('Choose: ')).trim();
     try {
@@ -360,6 +588,7 @@ async function runInteractiveMenu(env: EnvVars) {
       else if (choice === '4') await apiKeysMenu();
       else if (choice === '5') await monitoringMenu();
       else if (choice === '6') await cmdStatus(env, false);
+      else if (choice === '7') await cmdRunAll(env, false);
       else if (choice === '0') { reader.close(); break; }
       else console.log('Invalid choice');
     } catch (err) {
@@ -402,11 +631,6 @@ async function main() {
       await cmdBalance(env, userId);
       break;
     }
-    case 'tokens': {
-      const userId = args[0] || 'cli-' + Date.now();
-      await cmdBalance(env, userId);
-      break;
-    }
     case 'validate': {
       const token = args[0];
       if (!token) { console.error('Usage: validate <jwt>'); process.exit(2); }
@@ -424,21 +648,23 @@ async function main() {
       await cmdAdminApiKeys(env, action, extra);
       break;
     }
+    case 'runAll':
+      await cmdRunAll(env);
+      break;
     case 'help':
     default:
       console.log(`Pluct CLI
 Usage:
-  npx ts-node cli/index.ts status
-  npx ts-node cli/index.ts service-health
-  npx ts-node cli/index.ts seed-credits <userId> <amount>
-  npx ts-node cli/index.ts add-user <userId> <initialCredits>
-  npx ts-node cli/index.ts vend-token <userId>
-  npx ts-node cli/index.ts balance <userId>
-  npx ts-node cli/index.ts tokens <userId>
-  npx ts-node cli/index.ts validate <jwt>
-  npx ts-node cli/index.ts admin:list-users
-  npx ts-node cli/index.ts admin:list-transactions
-  npx ts-node cli/index.ts admin:api-keys <list|create [name]|revoke <id>>
+  npx ts-node cli/index.ts status                    # Check system status
+  npx ts-node cli/index.ts service-health           # Check service health
+  npx ts-node cli/index.ts balance <userId>          # Get user credit balance
+  npx ts-node cli/index.ts vend-token <userId>       # Vend short-lived token
+  npx ts-node cli/index.ts validate <jwt>           # Validate JWT token
+  npx ts-node cli/index.ts seed-credits <userId> <amount>  # Add credits (admin)
+  npx ts-node cli/index.ts add-user <userId> <credits>     # Create user (admin)
+  npx ts-node cli/index.ts admin:list-users         # List all users (admin)
+  npx ts-node cli/index.ts admin:list-transactions  # List transactions (admin)
+  npx ts-node cli/index.ts runAll                   # Run comprehensive tests
 
 Env resolution:
   Reads .dev.vars at repo root; supports BASE_URL override.

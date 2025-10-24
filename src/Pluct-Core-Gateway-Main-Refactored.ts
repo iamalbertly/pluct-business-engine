@@ -917,7 +917,17 @@ export class PluctGateway {
     router.post('/credits/add', zValidator('json', AddCreditsSchema), async c => {
       try {
         const adminKey = c.req.header('X-API-Key');
-        if (adminKey !== c.env.ENGINE_ADMIN_KEY) {
+        const resolvedConfig = resolveConfig(c.env);
+        
+        console.log('🔧 Admin Key Debug:', {
+          providedKey: adminKey,
+          providedKeyLength: adminKey?.length,
+          resolvedKey: resolvedConfig.ENGINE_ADMIN_KEY,
+          resolvedKeyLength: resolvedConfig.ENGINE_ADMIN_KEY?.length,
+          keysMatch: adminKey === resolvedConfig.ENGINE_ADMIN_KEY
+        });
+        
+        if (adminKey !== resolvedConfig.ENGINE_ADMIN_KEY) {
           return jsonError(c, 403, 'INVALID_ADMIN_KEY', 'Invalid admin API key');
         }
         

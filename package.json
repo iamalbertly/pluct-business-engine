@@ -10,6 +10,9 @@
 		"test": "vitest",
 		"test:coverage": "vitest --coverage",
 		"test:gateway": "powershell -ExecutionPolicy Bypass -File .\\Pluct-Test-Gateway-Validation.ps1",
+		"test:e2e": "tsx cli/index.ts runAll",
+		"test:runAll": "tsx cli/index.ts runAll",
+		"test:testAll": "tsx cli/index.ts runAll",
 		"build": "wrangler build",
 		"preview": "wrangler dev --remote",
 		"cli": "tsx cli/index.ts"
