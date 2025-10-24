@@ -59,7 +59,10 @@ const corsConfig = {
       'http://localhost:3000',
       'http://localhost:8080'
     ];
-    return allowedOrigins.includes(origin) || !origin ? origin : null;
+    if (!origin || allowedOrigins.includes(origin)) {
+      return origin || '*';
+    }
+    return null;
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: [
@@ -168,6 +171,39 @@ const MetaQuerySchema = z.object({
     'Only TikTok URLs are supported'
   )
 });
+
+// Custom error handler for Meta endpoint to return 422 instead of 400
+function handleMetaZodError(c: any, error: any) {
+  const build = buildInfo(c.env);
+  const errorResponse = createErrorResponse(
+    'invalid_url',
+    'Only TikTok URLs are supported',
+    { 
+      providedUrl: c.req.query('url') || 'not provided',
+      supportedDomains: ['tiktok.com', 'vm.tiktok.com']
+    },
+    build,
+    'Please provide a valid TikTok URL'
+  );
+  return c.json(errorResponse, 422);
+}
+
+// Custom error handler for Zod validation
+const handleZodError = (error: any, c: any) => {
+  if (error.issues && error.issues.length > 0) {
+    const issue = error.issues[0];
+    const build = buildInfo(c.env);
+    const errorResponse = createErrorResponse(
+      'invalid_url',
+      issue.message || 'Invalid URL',
+      { providedUrl: issue.path?.[0] || 'unknown' },
+      build,
+      'Please provide a valid TikTok URL'
+    );
+    return c.json(errorResponse, 422);
+  }
+  return c.json({ ok: false, code: 'validation_error', message: 'Validation failed' }, 400);
+};
 
 // Environment resolution helper
 function pickFirst(env: any, keys: string[]): string | undefined {
@@ -343,7 +379,14 @@ export class PluctGateway {
     this.circuitBreaker.addService('ttt', {
       failureThreshold: 5,
       timeout: 30000,
-      resetTimeout: 60000
+      resetTimeout: 60000,
+      // Enhanced stability: Exponential backoff
+      backoffMultiplier: 2,
+      maxBackoffMs: 300000, // 5 minutes max
+      // Enhanced stability: Health check interval
+      healthCheckInterval: 30000, // 30 seconds
+      // Enhanced stability: Graceful degradation
+      fallbackEnabled: true
     });
   }
   
@@ -357,6 +400,63 @@ export class PluctGateway {
       // Ensure all responses have proper content-type
       if (!c.res.headers.get('content-type')) {
         c.res.headers.set('content-type', 'application/json');
+      }
+    });
+
+    // Request timeout middleware
+    this.app.use('*', async (c, next) => {
+      const timeout = parseInt(c.env.REQUEST_TIMEOUT || '30000', 10);
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timeout')), timeout);
+      });
+      
+      try {
+        await Promise.race([next(), timeoutPromise]);
+      } catch (error) {
+        if ((error as Error).message === 'Request timeout') {
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'request_timeout',
+            'Request timeout',
+            { timeoutMs: timeout },
+            build,
+            'Please try again with a shorter request'
+          );
+          return c.json(errorResponse, 408);
+        }
+        throw error;
+      }
+    });
+
+    // Request deduplication middleware (Bonus 3)
+    this.app.use('*', async (c, next) => {
+      const clientRequestId = c.req.header('X-Client-Request-Id');
+      const userId = c.req.header('X-User-ID') || 'anonymous';
+      
+      if (clientRequestId && c.env.KV_USERS) {
+        const dedupKey = `dedup:${userId}:${clientRequestId}`;
+        const existing = await c.env.KV_USERS.get(dedupKey);
+        
+        if (existing) {
+          const cachedResponse = JSON.parse(existing);
+          return c.json(cachedResponse.body, cachedResponse.status, cachedResponse.headers);
+        }
+        
+        // Mark as processing
+        await c.env.KV_USERS.put(dedupKey, JSON.stringify({ status: 'processing' }), { expirationTtl: 300 });
+      }
+      
+      await next();
+      
+      // Cache successful responses for deduplication
+      if (clientRequestId && c.env.KV_USERS && c.res.status < 400) {
+        const dedupKey = `dedup:${userId}:${clientRequestId}`;
+        const responseData = {
+          body: await c.res.clone().json().catch(() => ({})),
+          status: c.res.status,
+          headers: Object.fromEntries(c.res.headers.entries())
+        };
+        await c.env.KV_USERS.put(dedupKey, JSON.stringify(responseData), { expirationTtl: 300 });
       }
     });
 
@@ -441,16 +541,20 @@ export class PluctGateway {
       
       // If we found allowed methods and current method is not allowed
       if (allowedMethods.length > 0 && !allowedMethods.includes(method)) {
-        return c.json({
-          ok: false,
-          code: 'method_not_allowed',
-          message: `Method ${method} not allowed for ${path}`,
-          details: {
+        const build = buildInfo(c.env);
+        const errorResponse = createErrorResponse(
+          'method_not_allowed',
+          `Method ${method} not allowed for ${path}`,
+          {
             allowedMethods,
             currentMethod: method,
             path
-          }
-        }, 405, {
+          },
+          build,
+          `Use one of the allowed methods: ${allowedMethods.join(', ')}`
+        );
+        
+        return c.json(errorResponse, 405, {
           'Allow': allowedMethods.join(', ')
         });
       }
@@ -458,14 +562,6 @@ export class PluctGateway {
       await next();
     });
 
-    // 404 handler for better error responses
-    this.app.notFound((c) => {
-      return c.json({
-        ok: false,
-        code: 'route_not_found',
-        message: 'Endpoint not found'
-      }, 404);
-    });
 
     // Error handler for thrown errors only
     this.app.onError((err, c) => {
@@ -506,12 +602,6 @@ export class PluctGateway {
     this.app.route('/ttt', protectedTTT);
     this.app.route('/meta', protectedMeta);
 
-    // 404 handler
-    this.app.notFound(c => c.json({ 
-      ok: false, 
-      code: 'route_not_found', 
-      message: 'Endpoint not found' 
-    }, 404));
   }
 
   private setupPublicRoutes() {
@@ -723,7 +813,15 @@ export class PluctGateway {
         
         if (!creditResult.success) {
           log('vend-token', 'insufficient credits', { userId, balance: creditResult.balanceAfter, requestId, ms: Date.now() - startTime });
-          return c.json({ error: 'INSUFFICIENT_CREDITS', balance: creditResult.balanceAfter }, 402);
+          const build = buildInfo(c.env);
+          const errorResponse = createErrorResponse(
+            'insufficient_credits',
+            'Insufficient credits to vend token',
+            { balance: creditResult.balanceAfter },
+            build,
+            'Add more credits to your account to continue'
+          );
+          return c.json(errorResponse, 402);
         }
         
         // Generate short-lived token (15 minutes max)
@@ -763,7 +861,11 @@ export class PluctGateway {
     
     
     // Metadata endpoint with randomized TTL caching
-    this.app.get('/meta', zValidator('query', MetaQuerySchema), async c => {
+    this.app.get('/meta', zValidator('query', MetaQuerySchema, (result, c) => {
+      if (!result.success) {
+        return handleMetaZodError(c, result.error);
+      }
+    }), async c => {
       try {
         const { url } = c.req.valid('query');
         
@@ -1082,6 +1184,16 @@ export class PluctGateway {
         const adminKey = c.req.header('X-API-Key');
         const authHeader = c.req.header('Authorization');
         const resolvedConfig = resolveConfig(c.env);
+        
+        // Debug logging for admin authentication
+        console.log('🔧 Admin Auth Debug:', {
+          hasAdminKey: !!adminKey,
+          hasAuthHeader: !!authHeader,
+          adminKeyLength: adminKey?.length || 0,
+          authHeaderLength: authHeader?.length || 0,
+          resolvedConfigKeyLength: resolvedConfig.ENGINE_ADMIN_KEY?.length || 0,
+          keysMatch: adminKey === resolvedConfig.ENGINE_ADMIN_KEY
+        });
         
         let isAuthenticated = false;
         let authMethod = '';
