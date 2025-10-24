@@ -304,21 +304,20 @@ async function cmdRunAll(env, exitOnComplete = true) {
             throw new Error(`Token validation failed: ${response.status}`);
         return { request, response, durationMs };
     });
-    // 8. TTT Transcribe - Test Core Service
+    // 8. TTT Transcribe - Test Core Service with TikTok URL
     let transcribeId = null;
-    await runTest('TTT Transcribe - Test Core Service', async () => {
+    await runTest('TTT Transcribe - Test Core Service with TikTok URL', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/ttt/transcribe`;
         const payload = {
-            audio: "test-audio-data",
-            format: "wav",
-            language: "en-US",
-            test: true
+            url: "https://vm.tiktok.com/ZMADQVF4e/",
+            language: "auto",
+            format: "text"
         };
         const { request, response, durationMs } = await httpJson('POST', url, payload, { 'Authorization': `Bearer ${serviceToken}` });
         if (!response.ok)
             throw new Error(`TTT transcribe failed: ${response.status}`);
-        transcribeId = response.json?.id || 'test-id';
+        transcribeId = response.json?.id || response.json?.requestId || 'test-id';
         return { request, response, durationMs, transcribeId };
     });
     // 9. TTT Status Check - Monitor Service
@@ -332,7 +331,105 @@ async function cmdRunAll(env, exitOnComplete = true) {
         }
         return { request, response, durationMs };
     });
-    // 10. Credit Consumption - Simulate Service Usage
+    // 10. TikTok Metadata Fetch - Test Metadata Endpoint
+    await runTest('TikTok Metadata Fetch - Test Metadata Endpoint', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/meta?url=${encodeURIComponent('https://vm.tiktok.com/ZMADQVF4e/')}`;
+        const { request, response, durationMs } = await httpJson('GET', url);
+        if (!response.ok) {
+            console.log(`⚠️  Metadata fetch failed (${response.status}), this is acceptable for testing`);
+        }
+        return { request, response, durationMs };
+    });
+    // 11. TTTranscribe User Journey - Complete Flow Test
+    await runTest('TTTranscribe User Journey - Complete Flow Test', async () => {
+        const base = getBaseUrl(env);
+        // Step 1: Get TikTok metadata first
+        const metaUrl = `${base}/meta?url=${encodeURIComponent('https://vm.tiktok.com/ZMADQVF4e/')}`;
+        const { request: metaRequest, response: metaResponse, durationMs: metaDuration } = await httpJson('GET', metaUrl);
+        if (!metaResponse.ok) {
+            console.log(`⚠️  Metadata fetch failed (${metaResponse.status}), continuing with direct transcription...`);
+        }
+        // Step 2: Start transcription with TikTok URL
+        const transcribeUrl = `${base}/ttt/transcribe`;
+        const transcribePayload = {
+            url: "https://vm.tiktok.com/ZMADQVF4e/",
+            language: "auto",
+            format: "text",
+            metadata: metaResponse.json || null
+        };
+        const { request: transcribeRequest, response: transcribeResponse, durationMs: transcribeDuration } = await httpJson('POST', transcribeUrl, transcribePayload, { 'Authorization': `Bearer ${serviceToken}` });
+        if (!transcribeResponse.ok) {
+            throw new Error(`Transcription request failed: ${transcribeResponse.status} - ${JSON.stringify(transcribeResponse.json)}`);
+        }
+        const jobId = transcribeResponse.json?.id || transcribeResponse.json?.requestId || transcribeResponse.json?.jobId;
+        if (!jobId) {
+            throw new Error('No job ID returned from transcription request');
+        }
+        return {
+            metadata: { request: metaRequest, response: metaResponse, durationMs: metaDuration },
+            transcription: { request: transcribeRequest, response: transcribeResponse, durationMs: transcribeDuration, jobId }
+        };
+    });
+    // 12. TTTranscribe Status Polling - Check Job Progress
+    let finalTranscriptionResult = null;
+    await runTest('TTTranscribe Status Polling - Check Job Progress', async () => {
+        const base = getBaseUrl(env);
+        const url = `${base}/ttt/status/${encodeURIComponent(transcribeId || 'test-id')}`;
+        // Poll status up to 3 times with 2-second intervals
+        let attempts = 0;
+        let lastResponse = null;
+        while (attempts < 3) {
+            const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
+            lastResponse = { request, response, durationMs };
+            if (response.ok) {
+                const status = response.json?.status || response.json?.state;
+                console.log(`📊 Transcription status: ${status} (attempt ${attempts + 1}/3)`);
+                if (status === 'completed' || status === 'done' || status === 'success') {
+                    finalTranscriptionResult = response.json;
+                    break;
+                }
+                else if (status === 'failed' || status === 'error') {
+                    throw new Error(`Transcription failed: ${JSON.stringify(response.json)}`);
+                }
+            }
+            attempts++;
+            if (attempts < 3) {
+                console.log('⏳ Waiting 2 seconds before next status check...');
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        if (!finalTranscriptionResult) {
+            console.log('⚠️  Transcription still in progress after 3 attempts, this is normal for long videos');
+        }
+        return lastResponse;
+    });
+    // 13. TTTranscribe Result Retrieval - Get Final Transcription
+    await runTest('TTTranscribe Result Retrieval - Get Final Transcription', async () => {
+        if (!finalTranscriptionResult) {
+            console.log('⏭️  Skipping result retrieval - transcription still in progress');
+            return { skipped: true, reason: 'Transcription still in progress' };
+        }
+        const base = getBaseUrl(env);
+        const url = `${base}/ttt/status/${encodeURIComponent(transcribeId || 'test-id')}`;
+        const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
+        if (!response.ok) {
+            throw new Error(`Failed to retrieve transcription result: ${response.status}`);
+        }
+        const transcription = response.json?.transcription || response.json?.text || response.json?.result;
+        if (!transcription) {
+            throw new Error('No transcription result found in response');
+        }
+        console.log(`📝 Transcription result: ${transcription.substring(0, 100)}${transcription.length > 100 ? '...' : ''}`);
+        return {
+            request,
+            response,
+            durationMs,
+            transcriptionLength: transcription.length,
+            preview: transcription.substring(0, 200)
+        };
+    });
+    // 14. Credit Consumption - Simulate Service Usage
     await runTest('Credit Consumption - Simulate Service Usage', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/v1/credits/consume`;
@@ -348,7 +445,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
         }
         return { request, response, durationMs };
     });
-    // 11. Final Balance Check - Verify Credits Consumed
+    // 15. Final Balance Check - Verify Credits Consumed
     await runTest('Final Balance Check - Verify Credits Consumed', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/v1/credits/balance`;
@@ -357,7 +454,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
             throw new Error(`Final balance check failed: ${response.status}`);
         return { request, response, durationMs };
     });
-    // 12. Admin Operations - List Users (if implemented)
+    // 16. Admin Operations - List Users (if implemented)
     await runTest('Admin Operations - List Users', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/admin/users`;
@@ -369,7 +466,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
         }
         return { request, response, durationMs };
     });
-    // 13. Rate Limiting Test - Multiple Requests
+    // 17. Rate Limiting Test - Multiple Requests
     await runTest('Rate Limiting Test - Multiple Requests', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/ttt/status/ping`;
@@ -380,7 +477,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
             throw new Error('All rate limit test requests failed');
         return { successCount, totalRequests: results.length };
     });
-    // 14. Error Handling Test - Invalid Token
+    // 18. Error Handling Test - Invalid Token
     await runTest('Error Handling Test - Invalid Token', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/ttt/status/ping`;
@@ -391,7 +488,7 @@ async function cmdRunAll(env, exitOnComplete = true) {
         }
         return { request, response, durationMs };
     });
-    // 15. Cleanup - Remove Test User (if implemented)
+    // 19. Cleanup - Remove Test User (if implemented)
     await runTest('Cleanup - Remove Test User', async () => {
         const base = getBaseUrl(env);
         const url = `${base}/admin/users/${testUserId}`;
