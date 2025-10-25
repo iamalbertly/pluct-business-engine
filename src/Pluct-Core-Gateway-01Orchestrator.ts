@@ -167,17 +167,21 @@ export class PluctGateway {
   }
 
   private setupRoutes() {
-    // Health and monitoring routes
+    // Health and monitoring routes (mounted at root)
     setupHealthRoutes(this.app, this.healthMonitor);
     
-    // Metadata routes
+    // Metadata routes (mounted at root)
     setupMetaRoutes(this.app, this.metadataResolver);
     
-    // V1 API routes
-    setupV1Routes(this.app, this.authValidator, this.creditsManager, this.rateLimiter);
+    // V1 API routes (mounted at /v1)
+    const v1Router = new Hono<{ Bindings: Env }>();
+    setupV1Routes(v1Router, this.authValidator, this.creditsManager, this.rateLimiter);
+    this.app.route('/v1', v1Router);
     
-    // TTTranscribe routes
-    setupTTTRoutes(this.app, this.authValidator, this.circuitBreaker, this.tttProxy);
+    // TTTranscribe routes (mounted at /ttt)
+    const tttRouter = new Hono<{ Bindings: Env }>();
+    setupTTTRoutes(tttRouter, this.authValidator, this.circuitBreaker, this.tttProxy);
+    this.app.route('/ttt', tttRouter);
   }
 
   async initialize(env: Env) {
