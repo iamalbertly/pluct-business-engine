@@ -1,5 +1,5 @@
 export interface Env {
-  DB: D1Database;
+  DB: any;
   KV_USERS: any;
 }
 
