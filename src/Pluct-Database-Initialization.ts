@@ -11,10 +11,26 @@ export class PluctDatabaseManager {
       await this.env.DB.prepare('SELECT 1').first();
       
       // Create credits table with simplified syntax
-      await this.env.DB.exec('CREATE TABLE IF NOT EXISTS credits (user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+      await this.env.DB.exec(`CREATE TABLE IF NOT EXISTS credits (
+        user_id TEXT PRIMARY KEY, 
+        balance INTEGER NOT NULL DEFAULT 0, 
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
       
       // Create audits table with simplified syntax
-      await this.env.DB.exec('CREATE TABLE IF NOT EXISTS audits (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, request_id TEXT NOT NULL, action TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, credit_delta INTEGER NOT NULL, balance_after INTEGER NOT NULL, ip TEXT, user_agent TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
+      await this.env.DB.exec(`CREATE TABLE IF NOT EXISTS audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+        user_id TEXT NOT NULL, 
+        request_id TEXT NOT NULL, 
+        action TEXT NOT NULL, 
+        route TEXT NOT NULL, 
+        status INTEGER NOT NULL, 
+        credit_delta INTEGER NOT NULL, 
+        balance_after INTEGER NOT NULL, 
+        ip TEXT, 
+        user_agent TEXT, 
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`);
       
       // Create indices for better query performance
       await this.env.DB.exec('CREATE INDEX IF NOT EXISTS idx_audits_user_id_created_at ON audits(user_id, created_at)');

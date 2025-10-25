@@ -7,6 +7,7 @@ import { zValidator } from '@hono/zod-validator';
 import { Env } from './Pluct-Core-Interfaces-01Types';
 import { buildInfo, log, resolveConfig } from './Pluct-Core-Utilities-01Helpers';
 import { createErrorResponse } from './Pluct-Core-Utilities-02ErrorHandling';
+import { validateAdminAuth, validateUserAuth } from './Pluct-Core-Utilities-03Authentication';
 
 // Zod schemas
 const AddCreditsSchema = z.object({
@@ -25,31 +26,9 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
   // Add credits to user account (Admin only)
   app.post('/credits/add', zValidator('json', AddCreditsSchema), async c => {
     try {
-      const adminKey = c.req.header('X-API-Key');
-      const authHeader = c.req.header('Authorization');
-      const resolvedConfig = resolveConfig(c.env);
-      
-      let isAuthenticated = false;
-      let authMethod = '';
-      
-      if (adminKey && adminKey === resolvedConfig.ENGINE_ADMIN_KEY) {
-        isAuthenticated = true;
-        authMethod = 'X-API-Key';
-      } else if (authHeader?.startsWith('Bearer ') && authHeader.slice(7) === resolvedConfig.ENGINE_ADMIN_KEY) {
-        isAuthenticated = true;
-        authMethod = 'Authorization Bearer';
-      }
-      
-      if (!isAuthenticated) {
-        const build = buildInfo(c.env);
-        const errorResponse = createErrorResponse(
-          'unauthorized',
-          'Missing or invalid admin authentication',
-          { providedAuth: { hasApiKey: !!adminKey, hasAuthHeader: !!authHeader, authMethod: authMethod || 'none' } },
-          build,
-          'Provide valid X-API-Key or Authorization Bearer header'
-        );
-        return c.json(errorResponse, 401, { 'WWW-Authenticate': 'Bearer' });
+      const authResult = await validateAdminAuth(c);
+      if (!authResult.isAuthenticated) {
+        return c.json(authResult.error, 401, { 'WWW-Authenticate': 'Bearer' });
       }
       
       const { userId, amount, reason, clientRequestId } = await c.req.json();
@@ -111,22 +90,12 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
   // Get user credit balance
   app.get('/credits/balance', async c => {
     try {
-      const auth = c.req.header('Authorization');
-      if (!auth?.startsWith('Bearer ')) {
-        const build = buildInfo(c.env);
-        const errorResponse = createErrorResponse(
-          'unauthorized',
-          'Authorization header required',
-          { providedAuth: !!auth },
-          build,
-          'Provide valid Authorization Bearer token'
-        );
-        return c.json(errorResponse, 401, { 'WWW-Authenticate': 'Bearer' });
+      const authResult = await validateUserAuth(c, authValidator);
+      if (!authResult.success) {
+        return c.json(authResult.error, 401, { 'WWW-Authenticate': 'Bearer' });
       }
       
-      const token = auth.slice(7);
-      const payload = await authValidator.verifyToken(token, false);
-      const userId = payload.sub;
+      const userId = authResult.payload.sub;
       
       const balance = await creditsManager.getCredits(userId);
       
@@ -153,22 +122,12 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
   // Vend short-lived service token
   app.post('/vend-token', zValidator('json', VendTokenSchema), async c => {
     try {
-      const auth = c.req.header('Authorization');
-      if (!auth?.startsWith('Bearer ')) {
-        const build = buildInfo(c.env);
-        const errorResponse = createErrorResponse(
-          'unauthorized',
-          'Authorization header required',
-          { providedAuth: !!auth },
-          build,
-          'Provide valid Authorization Bearer token'
-        );
-        return c.json(errorResponse, 401, { 'WWW-Authenticate': 'Bearer' });
+      const authResult = await validateUserAuth(c, authValidator);
+      if (!authResult.success) {
+        return c.json(authResult.error, 401, { 'WWW-Authenticate': 'Bearer' });
       }
       
-      const token = auth.slice(7);
-      const payload = await authValidator.verifyToken(token, false);
-      const userId = payload.sub;
+      const userId = authResult.payload.sub;
       
       // Rate limiting
       const rateLimitKey = `rate_limit:${userId}`;

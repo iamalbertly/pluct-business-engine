@@ -7,6 +7,7 @@ import { zValidator } from '@hono/zod-validator';
 import { Env } from './Pluct-Core-Interfaces-01Types';
 import { buildInfo, log } from './Pluct-Core-Utilities-01Helpers';
 import { createErrorResponse, handleJWTError } from './Pluct-Core-Utilities-02ErrorHandling';
+import { validateServiceToken } from './Pluct-Core-Utilities-03Authentication';
 
 // Zod schemas
 const TranscribeSchema = z.object({
