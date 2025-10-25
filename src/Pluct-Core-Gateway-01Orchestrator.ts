@@ -35,7 +35,6 @@ export class PluctGateway {
   constructor() {
     this.app = new Hono<{ Bindings: Env }>();
     this.setupMiddleware();
-    this.setupRoutes();
   }
 
   private setupMiddleware() {
@@ -199,6 +198,8 @@ export class PluctGateway {
       TTT_SHARED_SECRET: resolvedEnv.TTT_SHARED_SECRET!
     });
     this.metadataResolver = new PluctMetadataResolver({
+      TTT_BASE: resolvedEnv.TTT_BASE!,
+      TTT_SHARED_SECRET: resolvedEnv.TTT_SHARED_SECRET!,
       KV_USERS: resolvedEnv.KV_USERS!
     });
     
@@ -223,6 +224,9 @@ export class PluctGateway {
       timeout: 5000,
       resetTimeout: 120000
     });
+    
+    // Setup routes after services are initialized
+    this.setupRoutes();
   }
 
   getApp(): Hono<{ Bindings: Env }> {
