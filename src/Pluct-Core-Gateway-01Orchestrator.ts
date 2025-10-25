@@ -167,21 +167,31 @@ export class PluctGateway {
   }
 
   private setupRoutes() {
+    console.log('🔧 Setting up routes...');
+    
     // Health and monitoring routes (mounted at root)
+    console.log('🔧 Setting up health routes');
     setupHealthRoutes(this.app, this.healthMonitor);
     
     // Metadata routes (mounted at root)
+    console.log('🔧 Setting up metadata routes');
     setupMetaRoutes(this.app, this.metadataResolver);
     
     // V1 API routes (mounted at /v1)
+    console.log('🔧 Setting up V1 routes');
     const v1Router = new Hono<{ Bindings: Env }>();
     setupV1Routes(v1Router, this.authValidator, this.creditsManager, this.rateLimiter);
     this.app.route('/v1', v1Router);
+    console.log('🔧 V1 routes mounted at /v1');
     
     // TTTranscribe routes (mounted at /ttt)
+    console.log('🔧 Setting up TTT routes');
     const tttRouter = new Hono<{ Bindings: Env }>();
     setupTTTRoutes(tttRouter, this.authValidator, this.circuitBreaker, this.tttProxy);
     this.app.route('/ttt', tttRouter);
+    console.log('🔧 TTT routes mounted at /ttt');
+    
+    console.log('🔧 All routes set up successfully');
   }
 
   async initialize(env: Env) {
@@ -230,6 +240,13 @@ export class PluctGateway {
     });
     
     // Setup routes after services are initialized
+    console.log('🔧 Setting up routes with services:', {
+      authValidator: !!this.authValidator,
+      creditsManager: !!this.creditsManager,
+      rateLimiter: !!this.rateLimiter,
+      circuitBreaker: !!this.circuitBreaker,
+      tttProxy: !!this.tttProxy
+    });
     this.setupRoutes();
   }
 
