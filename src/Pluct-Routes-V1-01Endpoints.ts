@@ -160,7 +160,7 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
       }
       
       // Check credits and deduct
-      const creditResult = await creditsManager.deductCredits(userId, 1);
+      const creditResult = await creditsManager.spendCreditAtomic(userId, requestId, '/v1/vend-token');
       if (!creditResult.success) {
         const build = buildInfo(c.env);
         const errorResponse = createErrorResponse(
