@@ -8,6 +8,8 @@ import { resolveConfig, validateEnvironment, log, jsonError, buildInfo } from '.
 import { createErrorResponse } from './Pluct-Core-Utilities-02ErrorHandling';
 import { setupHealthRoutes } from './Pluct-Routes-Health-01Endpoints';
 import { setupMetaRoutes } from './Pluct-Routes-Meta-01Endpoints';
+import { setupV1Routes } from './Pluct-Routes-V1-01Endpoints';
+import { setupTTTRoutes } from './Pluct-Routes-TTT-01Endpoints';
 
 // Import service classes
 import { PluctAuthValidator } from './Pluct-Auth-Token-Validation';
@@ -172,9 +174,11 @@ export class PluctGateway {
     // Metadata routes
     setupMetaRoutes(this.app, this.metadataResolver);
     
-    // TODO: Add other route groups here
-    // setupV1Routes(this.app, this.authValidator, this.creditsManager, this.rateLimiter);
-    // setupTTTRoutes(this.app, this.authValidator, this.circuitBreaker, this.tttProxy);
+    // V1 API routes
+    setupV1Routes(this.app, this.authValidator, this.creditsManager, this.rateLimiter);
+    
+    // TTTranscribe routes
+    setupTTTRoutes(this.app, this.authValidator, this.circuitBreaker, this.tttProxy);
   }
 
   async initialize(env: Env) {
@@ -197,6 +201,9 @@ export class PluctGateway {
     this.metadataResolver = new PluctMetadataResolver({
       KV_USERS: resolvedEnv.KV_USERS!
     });
+    
+    // Initialize database
+    await this.databaseManager.initializeDatabase();
     
     // Initialize circuit breaker services
     this.circuitBreaker.addService('ttt', {
