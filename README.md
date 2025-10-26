@@ -98,6 +98,16 @@ pluct-business-engine/
 4. **Response Mirroring**: Return upstream JSON exactly as received
 5. **Error Handling**: Circuit breaker for service resilience
 
+### **Timeout Configuration**
+
+The engine implements endpoint-specific timeouts for optimal performance:
+
+- **Default Timeout**: 30 seconds (configurable via `REQUEST_TIMEOUT`)
+- **Transcription Endpoint** (`/ttt/transcribe`): 10 minutes (600,000ms)
+- **Status Check Endpoint** (`/ttt/status/:id`): 30 seconds (default)
+
+This configuration ensures transcription jobs have sufficient time to complete while maintaining responsive status checks.
+
 ## 🧾 API Response Examples
 
 ### **Successful Token Vending**

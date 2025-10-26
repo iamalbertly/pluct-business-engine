@@ -6,7 +6,7 @@ compatibility_date = "2024-10-01"
 TTT_BASE = "https://iamromeoly-tttranscribe.hf.space"   # where TTTranscribe runs
 LOG_LEVEL = "info"                   # debug, info, warn, error
 MAX_RETRIES = "3"                    # Maximum retry attempts
-REQUEST_TIMEOUT = "30000"            # Request timeout in milliseconds
+REQUEST_TIMEOUT = "30000"            # Default timeout in milliseconds (10 min for /transcribe endpoint)
 
 [[kv_namespaces]]
 binding = "KV_USERS"

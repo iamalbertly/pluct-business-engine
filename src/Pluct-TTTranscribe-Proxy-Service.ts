@@ -10,10 +10,14 @@ export interface Env {
 export class PluctTTTranscribeProxy {
   constructor(private env: Env) {}
 
-  async callTTT(path: string, init: RequestInit): Promise<Response> {
+  async callTTT(path: string, init: RequestInit, customTimeout?: number): Promise<Response> {
     const url = `${this.env.TTT_BASE}${path}`;
     const maxRetries = parseInt(this.env.MAX_RETRIES || '3', 10);
-    const timeout = parseInt(this.env.REQUEST_TIMEOUT || '30000', 10);
+    const defaultTimeout = parseInt(this.env.REQUEST_TIMEOUT || '30000', 10);
+    const timeout = customTimeout || defaultTimeout;
+    
+    // Use endpoint-specific timeout for transcribe endpoint
+    const effectiveTimeout = path === '/transcribe' ? 600000 : timeout; // 10 minutes for /transcribe
     const sharedSecret = this.env.TTT_SHARED_SECRET || this.env.ENGINE_SHARED_SECRET || '';
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -21,7 +25,7 @@ export class PluctTTTranscribeProxy {
         const requestInit: RequestInit = {
           ...init,
           headers: { ...(init.headers || {}), 'X-Engine-Auth': sharedSecret },
-          signal: AbortSignal.timeout(timeout)
+          signal: AbortSignal.timeout(effectiveTimeout)
         };
         
         const response = await fetch(url, requestInit);
