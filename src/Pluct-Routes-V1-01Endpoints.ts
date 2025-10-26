@@ -149,6 +149,9 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
       
       const { clientRequestId } = await c.req.json();
       
+      // Generate request ID early
+      const requestId = clientRequestId || `req_${Date.now()}`;
+      
       // Idempotency check
       if (clientRequestId) {
         const idempotencyKey = `idempotency:token:${clientRequestId}`;
@@ -180,7 +183,6 @@ export function setupV1Routes(app: Hono<{ Bindings: Env }>, authValidator: any, 
         exp: Math.floor(Date.now() / 1000) + 900 // 15 minutes
       });
       
-      const requestId = clientRequestId || `req_${Date.now()}`;
       const response = {
         ok: true,
         token: shortLivedToken,

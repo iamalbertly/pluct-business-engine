@@ -282,15 +282,13 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
     }},
     { name: 'Token Validation - Test Service Token', fn: async () => {
       const base = getBaseUrl(env);
-      const url = `${base}/ttt/status/test-id`;
+      const url = `${base}/ttt/status/ping`;
       const userToken = await createUserToken(env, testUserId);
       const vendResponse = await httpJson('POST', `${base}/v1/vend-token`, { userId: testUserId }, { 'Authorization': `Bearer ${userToken}` });
       const serviceToken = vendResponse.response.json?.token;
       if (!serviceToken) throw new Error('No service token available for validation');
       const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
-      if (response.status !== 200 && response.status !== 404) {
-        throw new Error(`Token validation failed: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Token validation failed: ${response.status}`);
       return { request, response, durationMs };
     }},
     { name: 'TTT Transcribe - Test Core Service', fn: async () => {
@@ -301,13 +299,13 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
       const serviceToken = vendResponse.response.json?.token;
       if (!serviceToken) throw new Error('No service token available for transcribe');
       const payload = { 
-        url: "https://example.com/test-audio.wav",
-        clientRequestId: `test-${Date.now()}`
+        audio: "test-audio-data", 
+        format: "wav",
+        language: "en-US",
+        test: true 
       };
       const { request, response, durationMs } = await httpJson('POST', url, payload, { 'Authorization': `Bearer ${serviceToken}` });
-      if (response.status !== 200 && response.status !== 404 && response.status !== 502) {
-        throw new Error(`TTT transcribe failed: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`TTT transcribe failed: ${response.status}`);
       const transcribeId = response.json?.id || 'test-id';
       return { request, response, durationMs, transcribeId };
     }},
@@ -319,7 +317,7 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
       const serviceToken = vendResponse.response.json?.token;
       if (!serviceToken) throw new Error('No service token available for status check');
       const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` });
-      if (response.status !== 200 && response.status !== 404 && response.status !== 502) {
+      if (response.status !== 200 && response.status !== 404) {
         throw new Error(`TTT status check failed: ${response.status}`);
       }
       return { request, response, durationMs };
@@ -359,7 +357,7 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
     }},
     { name: 'Rate Limiting Test - Multiple Requests', fn: async () => {
       const base = getBaseUrl(env);
-      const url = `${base}/ttt/status/test-id`;
+      const url = `${base}/ttt/status/ping`;
       const userToken = await createUserToken(env, testUserId);
       const vendResponse = await httpJson('POST', `${base}/v1/vend-token`, { userId: testUserId }, { 'Authorization': `Bearer ${userToken}` });
       const serviceToken = vendResponse.response.json?.token;
@@ -368,13 +366,13 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
         httpJson('GET', url, undefined, { 'Authorization': `Bearer ${serviceToken}` })
       );
       const results = await Promise.all(promises);
-      const successCount = results.filter(r => r.response.ok || r.response.status === 404).length;
+      const successCount = results.filter(r => r.response.ok).length;
       if (successCount === 0) throw new Error('All rate limit test requests failed');
       return { successCount, totalRequests: results.length };
     }},
     { name: 'Error Handling Test - Invalid Token', fn: async () => {
       const base = getBaseUrl(env);
-      const url = `${base}/ttt/status/test-id`;
+      const url = `${base}/ttt/status/ping`;
       const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer invalid-token` });
       if (response.status !== 401 && response.status !== 403) {
         throw new Error(`Expected 401/403 for invalid token, got: ${response.status}`);
@@ -393,90 +391,15 @@ async function cmdRunAll(env: EnvVars, exitOnComplete: boolean = true) {
     }}
   ];
 
-  // Smart prioritization: Run failed tests first, but ensure prerequisites run first
+  // Smart prioritization: Run failed tests first
   const priorityTests = allTests.filter(test => failedTests.includes(test.name));
   const remainingTests = allTests.filter(test => !failedTests.includes(test.name));
-  
-  // Define test dependencies - tests that must run before others
-  const testDependencies = {
-    'Token Vending - Create Service Token': ['User Creation - Add Initial Credits'],
-    'Token Validation - Test Service Token': ['Token Vending - Create Service Token'],
-    'TTT Transcribe - Test Core Service': ['Token Vending - Create Service Token'],
-    'TTT Status Check - Monitor Service': ['Token Vending - Create Service Token'],
-    'Credit Consumption - Simulate Service Usage': ['User Creation - Add Initial Credits'],
-    'Final Balance Check - Verify Credits Consumed': ['Credit Consumption - Simulate Service Usage'],
-    'Rate Limiting Test - Multiple Requests': ['Token Vending - Create Service Token'],
-    'Admin Operations - List Users': ['User Creation - Add Initial Credits']
-  };
-  
-  // Ensure prerequisite tests are included in priority tests
-  const prerequisiteTests = new Set<string>();
-  priorityTests.forEach(test => {
-    const deps = testDependencies[test.name] || [];
-    deps.forEach(dep => prerequisiteTests.add(dep));
-  });
-  
-  // Add prerequisite tests to priority if they're not already there
-  const additionalPriorityTests = allTests.filter(test => 
-    prerequisiteTests.has(test.name) && !priorityTests.includes(test)
-  );
-  
-  const orderedTests = [...priorityTests, ...additionalPriorityTests, ...remainingTests];
+  const orderedTests = [...priorityTests, ...remainingTests];
 
   // Execute tests in priority order
   for (const test of orderedTests) {
     const isPriority = priorityTests.includes(test);
-    const isPrerequisite = additionalPriorityTests.includes(test);
-    const priorityIndicator = isPriority ? '🔥 PRIORITY ' : (isPrerequisite ? '🔗 PREREQ ' : '');
-    console.log(`\n📋 Running: ${priorityIndicator}${test.name}`);
-    try {
-      const result = await test.fn();
-      const testResult: TestResult = { 
-        test: test.name, 
-        status: 'PASS', 
-        result, 
-        timestamp: Date.now() 
-      };
-      testResults.push(testResult);
-      console.log(`✅ ${test.name} - PASSED`);
-    } catch (error) {
-      const testResult: TestResult = { 
-        test: test.name, 
-        status: 'FAIL', 
-        error: String(error), 
-        timestamp: Date.now() 
-      };
-      testResults.push(testResult);
-      console.log(`❌ ${test.name} - FAILED: ${error}`);
-      overallSuccess = false;
-      
-      // In development phase, terminate on any failure with detailed error info
-      console.log('\n🚨 CRITICAL FAILURE DETECTED');
-      console.log('================================');
-      console.log(`❌ Test: ${test.name}`);
-      console.log(`🔍 Error: ${error}`);
-      console.log(`⏰ Time: ${new Date().toISOString()}`);
-      console.log(`🆔 Test User: ${testUserId}`);
-      console.log('\n📊 Current Test Results:');
-      console.log(`   Passed: ${testResults.filter(t => t.status === 'PASS').length}`);
-      console.log(`   Failed: ${testResults.filter(t => t.status === 'FAIL').length}`);
-      console.log('\n🛑 Terminating test suite due to critical failure');
-      console.log('💡 Fix the failing test before running again');
-      
-      // Save partial results
-      const session: TestSession = {
-        sessionId: `session-${Date.now()}`,
-        timestamp: Date.now(),
-        results: testResults,
-        overallSuccess: false
-      };
-      saveTestResults(session);
-      
-      if (exitOnComplete) {
-        process.exit(1);
-      }
-      return;
-    }
+    await runTest(test.name, test.fn, isPriority);
   }
 
   // Final Results
@@ -560,7 +483,7 @@ async function cmdVendToken(env: EnvVars, userId: string, exitOnComplete: boolea
 
 async function cmdValidate(env: EnvVars, token: string, exitOnComplete: boolean = true) {
   const base = getBaseUrl(env);
-  const url = `${base}/ttt/status/test-id`;
+  const url = `${base}/ttt/status/ping`;
   const { request, response, durationMs } = await httpJson('GET', url, undefined, { 'Authorization': `Bearer ${token}` });
   console.log(JSON.stringify({ command: 'validate', request, response, durationMs }, null, 2));
   logLine(`validate ${response.status}`);
